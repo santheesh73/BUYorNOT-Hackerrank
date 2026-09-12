@@ -156,6 +156,18 @@ class AffordabilityEngine:
                 rejection_reason="empty_baseline_states",
             )
 
+        max_forecast_date = baseline_states[-1].dt.date()
+        for p_date, _ in payments:
+            if p_date > max_forecast_date:
+                return ScheduleFeasibilityResult(
+                    is_safe=False,
+                    min_projected_balance=Decimal("0.00"),
+                    first_violation_date=p_date,
+                    violation_amount=None,
+                    total_payment_amount=total_amt,
+                    rejection_reason="payment_beyond_forecast_horizon",
+                )
+
         relief = spending_relief_by_date or {}
         payments_by_date: dict[date, Decimal] = {}
         for d, amt in payments:
