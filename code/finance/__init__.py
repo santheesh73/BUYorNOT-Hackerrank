@@ -20,6 +20,13 @@ from finance.normalizer import (
     NormalizedFinancialEvent,
 )
 
+from finance.compat import (
+    CashEvent,
+    ChangeAction,
+    FinancialEngine,
+    FX,
+)
+
 __all__ = [
     "FinancialEventNormalizer",
     "NormalizedFinancialEvent",
@@ -32,4 +39,9 @@ __all__ = [
     "Phase2Report",
     "build_phase2_report",
     "format_phase2_report",
+    "CashEvent",
+    "ChangeAction",
+    "FX",
+    "FinancialEngine",
 ]
+

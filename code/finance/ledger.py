@@ -202,6 +202,14 @@ class FinancialLedger:
         """Retrieve all normalized events across all users."""
         return list(self._events_by_id.values())
 
+    def get_all_events(self) -> list[NormalizedFinancialEvent]:
+        """Alias for get_all_normalized_events."""
+        return self.get_all_normalized_events()
+
+    def get_all_cash_flows(self) -> list[NormalizedFinancialEvent]:
+        """Retrieve all active cash-flow events across all users."""
+        return [e for e in self._events_by_id.values() if e.is_cash_flow]
+
     def get_lifecycles(self) -> list[ResolvedLifecycle]:
         """Retrieve all resolved lifecycles."""
         return list(self._all_lifecycles)

@@ -153,3 +153,29 @@ class DataStore:
     def get_normalized_event(self, event_id: str) -> Any | None:
         """Retrieve a single normalized event by ID."""
         return self.get_ledger().get_event(event_id)
+
+    # Phase 3: Evidence Store integration
+    def get_evidence_store(self) -> Any:
+        """Retrieve the EvidenceStore for this store, resolving evidence on demand."""
+        if not hasattr(self, "_evidence_store") or self._evidence_store is None:
+            from evidence.resolver import EvidenceResolver
+            from evidence.store import EvidenceStore
+
+            resolver = EvidenceResolver()
+            msg_facts = resolver.resolve_all_messages(self.datasets.messages)
+            img_facts = resolver.resolve_all_images(self.datasets.images)
+            self._evidence_store = EvidenceStore(msg_facts + img_facts)
+        return self._evidence_store
+
+    def get_user_evidence(self, user_id: str) -> list[Any]:
+        """Retrieve all structured financial evidence associated with a user."""
+        return self.get_evidence_store().get_user_evidence(user_id)
+
+    def get_event_evidence(self, event_id: str) -> list[Any]:
+        """Retrieve all structured financial evidence tied to a financial event."""
+        return self.get_evidence_store().get_event_evidence(event_id)
+
+    def get_request_evidence(self, request_id: str) -> list[Any]:
+        """Retrieve all structured financial evidence associated with an evaluation request."""
+        return self.get_evidence_store().get_request_evidence(request_id)
+
