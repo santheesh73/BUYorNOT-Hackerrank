@@ -28,6 +28,7 @@ class ScheduleFeasibilityResult:
     first_violation_date: date | None
     violation_amount: Decimal | None
     total_payment_amount: Decimal
+    rejection_reason: str | None = None
 
 
 class AffordabilityEngine:
@@ -86,6 +87,8 @@ class AffordabilityEngine:
         baseline_states: Sequence[FinancialState],
         payments: Sequence[tuple[date, Decimal]],
         minimum_balance_to_keep: Decimal,
+        deadline: date | None = None,
+        expected_total: Decimal | None = None,
         spending_relief_by_date: dict[date, Decimal] | None = None,
     ) -> ScheduleFeasibilityResult:
         """Simulate applying plan payments and optional spending relief across daily states.
@@ -93,22 +96,70 @@ class AffordabilityEngine:
         Returns ScheduleFeasibilityResult detailing safety, minimum projected balance,
         and first violation if unsafe.
         """
+        total_amt = sum((amt for _, amt in payments), Decimal("0.00"))
+
+        # 1. Validate payment amounts: reject negative amounts
+        for _, amt in payments:
+            if amt < Decimal("0.00"):
+                return ScheduleFeasibilityResult(
+                    is_safe=False,
+                    min_projected_balance=Decimal("0.00"),
+                    first_violation_date=None,
+                    violation_amount=None,
+                    total_payment_amount=total_amt,
+                    rejection_reason="negative_payment_amount",
+                )
+
+        # 2. Validate chronological order of payment dates
+        for i in range(len(payments) - 1):
+            if payments[i][0] > payments[i + 1][0]:
+                return ScheduleFeasibilityResult(
+                    is_safe=False,
+                    min_projected_balance=Decimal("0.00"),
+                    first_violation_date=payments[i + 1][0],
+                    violation_amount=None,
+                    total_payment_amount=total_amt,
+                    rejection_reason="non_chronological_payment_dates",
+                )
+
+        # 3. Validate completion deadline if provided
+        if deadline is not None and payments:
+            last_date = payments[-1][0]
+            if not self.validate_deadline(last_date, deadline):
+                return ScheduleFeasibilityResult(
+                    is_safe=False,
+                    min_projected_balance=Decimal("0.00"),
+                    first_violation_date=last_date,
+                    violation_amount=None,
+                    total_payment_amount=total_amt,
+                    rejection_reason="exceeds_completion_deadline",
+                )
+
+        # 4. Validate expected total if provided
+        if expected_total is not None and total_amt != expected_total:
+            return ScheduleFeasibilityResult(
+                is_safe=False,
+                min_projected_balance=Decimal("0.00"),
+                first_violation_date=None,
+                violation_amount=abs(total_amt - expected_total),
+                total_payment_amount=total_amt,
+                rejection_reason="total_amount_mismatch",
+            )
+
         if not baseline_states:
-            total_amt = sum((amt for _, amt in payments), Decimal("0.00"))
             return ScheduleFeasibilityResult(
                 is_safe=False,
                 min_projected_balance=Decimal("0.00"),
                 first_violation_date=None,
                 violation_amount=minimum_balance_to_keep,
                 total_payment_amount=total_amt,
+                rejection_reason="empty_baseline_states",
             )
 
         relief = spending_relief_by_date or {}
         payments_by_date: dict[date, Decimal] = {}
-        total_payment = Decimal("0.00")
         for d, amt in payments:
             payments_by_date[d] = payments_by_date.get(d, Decimal("0.00")) + amt
-            total_payment += amt
 
         cumulative_payment_impact = Decimal("0.00")
         cumulative_relief_impact = Decimal("0.00")
@@ -128,7 +179,7 @@ class AffordabilityEngine:
             if projected_close < min_bal:
                 min_bal = projected_close
 
-            if projected_close < minimum_balance_to_keep:
+            if not self.validate_minimum_balance(projected_close, minimum_balance_to_keep):
                 if is_safe:
                     is_safe = False
                     first_violation_date = d
@@ -140,7 +191,8 @@ class AffordabilityEngine:
             min_projected_balance=final_min_bal,
             first_violation_date=first_violation_date,
             violation_amount=violation_amount,
-            total_payment_amount=total_payment,
+            total_payment_amount=total_amt,
+            rejection_reason=None if is_safe else "minimum_balance_violation",
         )
 
     def validate_minimum_balance(
