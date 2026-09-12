@@ -3,3 +3,4 @@ log.txt
 __pycache__/
 *.pyc
 .gemini/
+.pytest_cache/
