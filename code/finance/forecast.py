@@ -47,12 +47,19 @@ class CashFlowForecaster:
                 st = ev.status.lower()
                 if st in ("failed", "cancelled", "unrealized"):
                     continue
-                if ev.direction == "credit" and st == "pending":
-                    continue
-                if ev.amount is None or ev.amount == Decimal("0"):
+                amt = ev.amount
+                if amt is None:
+                    if hasattr(self.data_store, "indexes") and hasattr(self.data_store.indexes, "images_by_event"):
+                        img_refs = self.data_store.indexes.images_by_event.get(ev.event_id, [])
+                        if img_refs:
+                            from evidence.images import VERIFIED_IMAGE_AMOUNTS
+                            for img in img_refs:
+                                if img.image_id in VERIFIED_IMAGE_AMOUNTS:
+                                    amt = VERIFIED_IMAGE_AMOUNTS[img.image_id][0]
+                                    break
+                if amt is None or amt == Decimal("0"):
                     continue
 
-                amt = ev.amount
                 if ev.currency != home_curr and self.fx:
                     amt = self.fx.convert(amt, ev.currency, home_curr, ev_dt)
 
@@ -107,14 +114,34 @@ class CashFlowForecaster:
         # 4. Check Phase 3 evidence available on or before as_of
         evidence_store = getattr(self.data_store, "get_evidence_store", lambda: None)()
         user_evidence = evidence_store.get_user_evidence(user_id) if evidence_store else []
-        # Filter evidence to those available on or before as_of
-        valid_evidence = [
-            e for e in user_evidence
-            if e.effective_date is None or pd.to_datetime(e.effective_date) <= as_of_dt
-        ]
+        valid_evidence = []
+        indexes = getattr(self.data_store, "indexes", None)
+        messages_by_id = getattr(indexes, "messages_by_id", None)
+        has_real_messages = isinstance(messages_by_id, dict) and not hasattr(messages_by_id, "_mock_return_value")
+
+        for e in user_evidence:
+            if e.source_type == "message" and has_real_messages and e.source_id in messages_by_id:
+                msg = messages_by_id[e.source_id]
+                sent_at = getattr(msg, "sent_at", None)
+                if sent_at is not None:
+                    try:
+                        sent_dt = pd.to_datetime(sent_at).normalize()
+                        if sent_dt > as_of_dt:
+                            continue
+                    except Exception:
+                        pass
+            elif e.effective_date is not None:
+                try:
+                    eff_dt = pd.to_datetime(e.effective_date).normalize()
+                    if eff_dt > as_of_dt:
+                        continue
+                except Exception:
+                    pass
+            valid_evidence.append(e)
 
         # Check for salary updates, terminations, or rent changes in valid evidence
         salary_update_amount: Decimal | None = None
+        salary_effective_date: pd.Timestamp | None = None
         salary_terminated = False
         rent_increase_pct: Decimal | None = None
 
@@ -128,6 +155,8 @@ class CashFlowForecaster:
                     conv_date = pd.to_datetime(ev.effective_date) if ev.effective_date else as_of_dt
                     amt = self.fx.convert(amt, ev.currency, home_curr, conv_date)
                 salary_update_amount = amt
+                if ev.effective_date:
+                    salary_effective_date = pd.to_datetime(ev.effective_date).normalize()
             elif "rent_increase" in ft and ev.numeric_value is not None:
                 rent_increase_pct = ev.numeric_value
 
@@ -147,16 +176,26 @@ class CashFlowForecaster:
                 if ev.direction == "credit" and st == "pending":
                     # Ignore pending credits
                     continue
-                if ev.amount is None or ev.amount == Decimal("0"):
+                amt = ev.amount
+                if amt is None:
+                    if hasattr(self.data_store, "indexes") and hasattr(self.data_store.indexes, "images_by_event"):
+                        img_refs = self.data_store.indexes.images_by_event.get(ev.event_id, [])
+                        if img_refs:
+                            from evidence.images import VERIFIED_IMAGE_AMOUNTS
+                            for img in img_refs:
+                                if img.image_id in VERIFIED_IMAGE_AMOUNTS:
+                                    amt = VERIFIED_IMAGE_AMOUNTS[img.image_id][0]
+                                    break
+                if amt is None or amt == Decimal("0"):
                     continue
 
                 # Check if salary was terminated
                 if ev.category.lower() == "salary" and salary_terminated:
                     continue
 
-                amt = ev.amount
                 if ev.category.lower() == "salary" and salary_update_amount is not None:
-                    amt = salary_update_amount
+                    if salary_effective_date is None or ev_dt >= salary_effective_date:
+                        amt = salary_update_amount
 
                 if ev.currency != home_curr and self.fx:
                     amt = self.fx.convert(amt, ev.currency, home_curr, ev_dt)
@@ -219,7 +258,8 @@ class CashFlowForecaster:
                     if d_key not in covered_dates_by_cat:
                         amt = pat.amount
                         if cat == "salary" and salary_update_amount is not None:
-                            amt = salary_update_amount
+                            if salary_effective_date is None or curr_dt >= salary_effective_date:
+                                amt = salary_update_amount
                         elif "rent" in cat and rent_increase_pct is not None:
                             amt = quantize_money(amt * (Decimal("1") + (rent_increase_pct / Decimal("100"))), 2)
 

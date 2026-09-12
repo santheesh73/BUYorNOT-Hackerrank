@@ -38,6 +38,15 @@ from finance.state import (
     FinancialState,
     RecurringPattern,
 )
+from finance.decision import (
+    DecisionEngine,
+    PlanCandidate,
+    calculate_amount_safe_to_pay,
+    calculate_earliest_date_for_full_payment,
+    simulate_plan_safety,
+)
+from finance.explanation import generate_decision_explanation
+from finance.output import generate_output_csv, validate_output_csv
 
 __all__ = [
     "FinancialEventNormalizer",
@@ -62,6 +71,14 @@ __all__ = [
     "Phase4Report",
     "build_phase4_report",
     "format_phase4_report",
+    "DecisionEngine",
+    "PlanCandidate",
+    "calculate_amount_safe_to_pay",
+    "calculate_earliest_date_for_full_payment",
+    "simulate_plan_safety",
+    "generate_decision_explanation",
+    "generate_output_csv",
+    "validate_output_csv",
 ]
 
 

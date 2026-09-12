@@ -65,19 +65,28 @@ class RecurringPatternDetector:
             stdev = statistics.stdev(intervals) if len(intervals) > 1 else 0.0
 
             # Determine frequency
+            is_every_5d = (4 <= avg_interval <= 6) and (stdev <= 1.5)
             is_weekly = (6 <= avg_interval <= 8) and (stdev <= 2.5)
+            is_every_10d = (9 <= avg_interval <= 11) and (stdev <= 2.0)
             is_biweekly = (13 <= avg_interval <= 16) and (stdev <= 3.0)
+            is_every_21d = (20 <= avg_interval <= 22) and (stdev <= 3.0)
             is_monthly = (27 <= avg_interval <= 33) and (stdev <= 4.0)
 
-            if not (is_weekly or is_biweekly or is_monthly):
+            if not (is_every_5d or is_weekly or is_every_10d or is_biweekly or is_every_21d or is_monthly):
                 # Irregular or single occurrences: do not promote to recurring pattern
                 continue
 
             # Determine interval days and interval type
-            if is_weekly:
+            if is_every_5d:
+                interval_days = 5
+            elif is_weekly:
                 interval_days = 7
+            elif is_every_10d:
+                interval_days = 10
             elif is_biweekly:
                 interval_days = 14
+            elif is_every_21d:
+                interval_days = 21
             else:
                 interval_days = 30
 

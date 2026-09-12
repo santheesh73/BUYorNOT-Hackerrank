@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .gemini/
 .pytest_cache/
+scratch/

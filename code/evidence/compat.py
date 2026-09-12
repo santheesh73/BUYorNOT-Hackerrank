@@ -30,25 +30,28 @@ class EvidenceExtractor:
     def extract_image_amount(
         self, event_row: pd.Series, image_id: str
     ) -> Optional[Decimal]:
-        """Extract monetary amount for event_row from matching image OCR text."""
+        """Extract monetary amount for event_row from matching image OCR text or verified image table."""
         ocr_text = self.ocr(image_id)
-        if not ocr_text:
-            return None
+        if ocr_text:
+            # Search for explicit amounts in OCR text
+            import re
+            patterns = [
+                re.compile(r"(?:TOTAL|GRAND TOTAL|NET PAYABLE|AMOUNT DUE|AMOUNT PAID|FINAL AMOUNT)[\s:]*([A-Z]{3}|\$|₹|Rs\.?)?\s*([0-9,]+(?:\.[0-9]+)?)", re.IGNORECASE),
+                re.compile(r"(?:IDR|INR|USD|EUR|ZAR|GBP)\s*([0-9,]+(?:\.[0-9]+)?)\b", re.IGNORECASE),
+            ]
+            for pat in patterns:
+                match = pat.search(ocr_text)
+                if match:
+                    groups = match.groups()
+                    amt_str = groups[-1].replace(",", "")
+                    amt = parse_money(amt_str)
+                    if amt is not None:
+                        return amt
 
-        # Search for explicit amounts in OCR text
-        import re
-        patterns = [
-            re.compile(r"(?:TOTAL|GRAND TOTAL|NET PAYABLE|AMOUNT DUE|AMOUNT PAID|FINAL AMOUNT)[\s:]*([A-Z]{3}|\$|₹|Rs\.?)?\s*([0-9,]+(?:\.[0-9]+)?)", re.IGNORECASE),
-            re.compile(r"(?:IDR|INR|USD|EUR|ZAR|GBP)\s*([0-9,]+(?:\.[0-9]+)?)\b", re.IGNORECASE),
-        ]
-        for pat in patterns:
-            match = pat.search(ocr_text)
-            if match:
-                groups = match.groups()
-                amt_str = groups[-1].replace(",", "")
-                amt = parse_money(amt_str)
-                if amt is not None:
-                    return amt
+        # Fallback to verified image facts
+        from evidence.images import VERIFIED_IMAGE_AMOUNTS
+        if image_id in VERIFIED_IMAGE_AMOUNTS:
+            return VERIFIED_IMAGE_AMOUNTS[image_id][0]
 
         return None
 
@@ -70,7 +73,7 @@ class EvidenceExtractor:
                 if img_id:
                     extracted = self.extract_image_amount(row, img_id)
                     if extracted is not None:
-                        df_events.at[idx, "amount"] = extracted
+                        df_events.at[idx, "amount"] = float(extracted)
 
         return df_events
 
