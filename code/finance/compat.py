@@ -1,9 +1,10 @@
 """Compatibility adapters for Part B: CashEvent, ChangeAction, FX, and FinancialEngine."""
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional, Sequence
 
 import pandas as pd
 
@@ -42,8 +43,18 @@ class ChangeAction:
 class FX:
     """Foreign exchange converter adhering to Part B specification."""
 
-    def __init__(self, rates: pd.DataFrame) -> None:
-        self.rates = rates.copy()
+    def __init__(self, rates: pd.DataFrame | Any | None = None) -> None:
+        if rates is None:
+            from utils.paths import get_dataset_dir
+            self.rates = pd.read_csv(get_dataset_dir() / "exchange_rates.csv")
+        elif isinstance(rates, pd.DataFrame):
+            self.rates = rates.copy()
+        elif hasattr(rates, "datasets") and hasattr(rates.datasets, "exchange_rates"):
+            from utils.paths import get_dataset_dir
+            self.rates = pd.read_csv(get_dataset_dir() / "exchange_rates.csv")
+        else:
+            self.rates = pd.DataFrame()
+
         self._rates_map: dict[tuple[date, str, str], Decimal] = {}
         for _, row in self.rates.iterrows():
             d = parse_date(row.get("rate_date"))
@@ -52,6 +63,37 @@ class FX:
             r = parse_money(row.get("rate"))
             if d and fc and tc and r:
                 self._rates_map[(d, fc, tc)] = r
+
+    def _find_rate(self, rate_date: date, fc: str, tc: str) -> Decimal | None:
+        # 1. Exact match
+        if (rate_date, fc, tc) in self._rates_map:
+            return self._rates_map[(rate_date, fc, tc)]
+        if (rate_date, tc, fc) in self._rates_map:
+            inv = self._rates_map[(rate_date, tc, fc)]
+            if inv and inv != 0:
+                return Decimal("1.0") / inv
+
+        # 2. 15th of the same month
+        m15 = date(rate_date.year, rate_date.month, 15)
+        if (m15, fc, tc) in self._rates_map:
+            return self._rates_map[(m15, fc, tc)]
+        if (m15, tc, fc) in self._rates_map:
+            inv = self._rates_map[(m15, tc, fc)]
+            if inv and inv != 0:
+                return Decimal("1.0") / inv
+
+        # 3. Nearest available date for (fc, tc) or (tc, fc)
+        candidate_dates = [d for (d, f, t) in self._rates_map if (f == fc and t == tc) or (f == tc and t == fc)]
+        if candidate_dates:
+            nearest_d = min(candidate_dates, key=lambda d: abs((d - rate_date).days))
+            if (nearest_d, fc, tc) in self._rates_map:
+                return self._rates_map[(nearest_d, fc, tc)]
+            if (nearest_d, tc, fc) in self._rates_map:
+                inv = self._rates_map[(nearest_d, tc, fc)]
+                if inv and inv != 0:
+                    return Decimal("1.0") / inv
+
+        return None
 
     def convert(
         self,
@@ -67,13 +109,7 @@ class FX:
             return amount
 
         rate_date = dt.date() if hasattr(dt, "date") else dt
-        rate = self._rates_map.get((rate_date, fc, tc))
-        if rate is None:
-            # Check inverse
-            inv = self._rates_map.get((rate_date, tc, fc))
-            if inv and inv != 0:
-                rate = Decimal("1.0") / inv
-
+        rate = self._find_rate(rate_date, fc, tc)
         if rate is None:
             raise ValueError(f"Exchange rate not found for {fc}->{tc} on {rate_date}")
 
@@ -101,5 +137,44 @@ class FinancialEngine:
         self.extractor = EvidenceExtractor(media_dir)
         self.msgfacts = MessageFacts(self.messages)
 
+        self.data_path = data_path
+        self._forecaster = None
+
         # Resolve blank amounts from images
         self.events = self.extractor.resolve_blank_amounts(self.events, self.images)
+
+    def get_forecaster(self) -> Any:
+        """Retrieve CashFlowForecaster, initializing on demand."""
+        if self._forecaster is None:
+            from data.store import DataStore
+            from finance.forecast import CashFlowForecaster
+            store = DataStore.load_from_repo(self.data_path)
+            self._forecaster = CashFlowForecaster(data_store=store, fx=self.fx)
+        return self._forecaster
+
+    def forecast(
+        self,
+        user_id: str,
+        as_of: pd.Timestamp,
+        horizon_days: int = 90,
+    ) -> list[Any]:
+        """Simulate daily balance progression for user_id over horizon_days."""
+        return self.get_forecaster().forecast(user_id=user_id, as_of=as_of, horizon_days=horizon_days)
+
+    def future_cash_events(
+        self,
+        user_id: str,
+        as_of: pd.Timestamp,
+        horizon_days: int = 90,
+    ) -> list[CashEvent]:
+        """Generate future cash-flow events for user_id over horizon_days."""
+        return self.get_forecaster().future_cash_events(user_id=user_id, as_of=as_of, horizon_days=horizon_days)
+
+    def detect_recurring_patterns(
+        self,
+        events: Sequence[CashEvent],
+        as_of: pd.Timestamp,
+    ) -> list[Any]:
+        """Detect recurring patterns from events occurring on or before as_of."""
+        return self.get_forecaster().detect_recurring_patterns(events=events, as_of=as_of)
+

@@ -27,6 +27,18 @@ from finance.compat import (
     FX,
 )
 
+from finance.forecast import CashFlowForecaster
+from finance.recurrence import RecurringPatternDetector
+from finance.report import (
+    Phase4Report,
+    build_phase4_report,
+    format_phase4_report,
+)
+from finance.state import (
+    FinancialState,
+    RecurringPattern,
+)
+
 __all__ = [
     "FinancialEventNormalizer",
     "NormalizedFinancialEvent",
@@ -43,5 +55,13 @@ __all__ = [
     "ChangeAction",
     "FX",
     "FinancialEngine",
+    "FinancialState",
+    "RecurringPattern",
+    "RecurringPatternDetector",
+    "CashFlowForecaster",
+    "Phase4Report",
+    "build_phase4_report",
+    "format_phase4_report",
 ]
+
 

@@ -19,6 +19,7 @@ from data.validators import validate_datasets
 from evidence.report import build_phase3_report, format_phase3_report
 from evidence.resolver import EvidenceResolver
 from evidence.store import EvidenceStore
+from finance.report import build_phase4_report, format_phase4_report
 from utils.paths import get_repo_root
 
 # Configure logging
@@ -63,7 +64,7 @@ def main() -> int:
     evidence_store = EvidenceStore(msg_facts + img_facts)
     store._evidence_store = evidence_store
 
-    # 7. Generate diagnostics
+    # 7. Generate Phase 3 diagnostics
     logger.info("Generating Phase 3 diagnostic report...")
     report = build_phase3_report(
         store=evidence_store,
@@ -74,13 +75,24 @@ def main() -> int:
     report_text = format_phase3_report(report=report, data_store=store)
     print("\n" + report_text + "\n")
 
-    if not validation_report.is_valid or report.status != "PASS":
-        logger.error("Phase 3 execution encountered errors.")
+    # 8. Generate Phase 4 financial state & 90-day forecast diagnostics
+    logger.info("Generating Phase 4 Financial State & 90-Day Forecast...")
+    phase4_report = build_phase4_report(
+        data_store=store,
+        error_count=len(validation_report.errors),
+        warning_count=len(validation_report.warnings),
+    )
+    phase4_text = format_phase4_report(phase4_report)
+    print("\n" + phase4_text + "\n")
+
+    if not validation_report.is_valid or report.status != "PASS" or phase4_report.status != "PASS":
+        logger.error("Execution encountered errors.")
         return 1
 
-    logger.info("Phase 3 execution complete. Evidence resolved and indexed.")
+    logger.info("Phase 4 execution complete. Financial forecast verified.")
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
+
