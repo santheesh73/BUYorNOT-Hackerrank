@@ -20,6 +20,9 @@ class CashFlowForecaster:
         self.data_store = data_store
         self.fx = fx or getattr(data_store, "fx", None)
         self.detector = RecurringPatternDetector()
+        self._forecast_cache: dict[tuple[str, str, int], list[FinancialState]] = {}
+        self._future_events_cache: dict[tuple[str, str, int], list[CashEvent]] = {}
+        self._patterns_cache: dict[tuple[str, str], list[RecurringPattern]] = {}
 
     def detect_recurring_patterns(
         self,
@@ -35,15 +38,15 @@ class CashFlowForecaster:
         as_of: pd.Timestamp,
     ) -> list[CashEvent]:
         """Extract all valid historical cash events for user_id on or before as_of."""
-        as_of_dt = pd.to_datetime(as_of)
+        as_of_date = as_of.date() if hasattr(as_of, "date") else (as_of if isinstance(as_of, date) else parse_date(as_of))
         profile = self.data_store.get_profile(user_id)
         home_curr = profile.home_currency if profile else "USD"
         raw_events = self.data_store.get_user_events(user_id)
 
         history: list[CashEvent] = []
         for ev in raw_events:
-            ev_dt = pd.to_datetime(ev.event_date)
-            if ev_dt <= as_of_dt:
+            ev_date = ev.event_date if isinstance(ev.event_date, date) else parse_date(ev.event_date)
+            if ev_date is not None and ev_date <= as_of_date:
                 st = ev.status.lower()
                 if st in ("failed", "cancelled", "unrealized"):
                     continue
@@ -60,6 +63,7 @@ class CashFlowForecaster:
                 if amt is None or amt == Decimal("0"):
                     continue
 
+                ev_dt = pd.Timestamp(ev_date)
                 if ev.currency != home_curr and self.fx:
                     amt = self.fx.convert(amt, ev.currency, home_curr, ev_dt)
 
@@ -84,8 +88,14 @@ class CashFlowForecaster:
         as_of: pd.Timestamp,
     ) -> list[RecurringPattern]:
         """Detect recurring patterns for a user based on history up to as_of."""
+        as_of_str = as_of.strftime("%Y-%m-%d") if hasattr(as_of, "strftime") else str(as_of)[:10]
+        cache_key = (user_id, as_of_str)
+        if cache_key in self._patterns_cache:
+            return self._patterns_cache[cache_key]
         hist = self.history_cash_events(user_id, as_of)
-        return self.detect_recurring_patterns(hist, as_of)
+        patterns = self.detect_recurring_patterns(hist, as_of)
+        self._patterns_cache[cache_key] = patterns
+        return patterns
 
     def future_cash_events(
         self,
@@ -100,6 +110,11 @@ class CashFlowForecaster:
         - Messages and evidence dated after as_of are ignored.
         - Non-cash (failed, cancelled, duplicate, unrealized, pending credit) events are excluded.
         """
+        as_of_str = as_of.strftime("%Y-%m-%d") if hasattr(as_of, "strftime") else str(as_of)[:10]
+        cache_key = (user_id, as_of_str, horizon_days)
+        if cache_key in self._future_events_cache:
+            return self._future_events_cache[cache_key]
+
         as_of_dt = pd.to_datetime(as_of)
         end_dt = as_of_dt + pd.Timedelta(days=horizon_days)
 
@@ -286,6 +301,7 @@ class CashFlowForecaster:
         # 7. Deterministic sort by (date, amount sign [debits first, or credits first? credits first], event_id)
         # Consistent ordering: positive first (inflows), then debits, then event_id
         future_events.sort(key=lambda e: (e.dt, -e.amount, e.event_id))
+        self._future_events_cache[cache_key] = future_events
         return future_events
 
     def forecast(
@@ -295,6 +311,11 @@ class CashFlowForecaster:
         horizon_days: int = 90,
     ) -> list[FinancialState]:
         """Simulate daily balance progression for user_id over horizon_days starting at as_of."""
+        as_of_str = as_of.strftime("%Y-%m-%d") if hasattr(as_of, "strftime") else str(as_of)[:10]
+        cache_key = (user_id, as_of_str, horizon_days)
+        if cache_key in self._forecast_cache:
+            return self._forecast_cache[cache_key]
+
         as_of_dt = pd.to_datetime(as_of).normalize()
         profile = self.data_store.get_profile(user_id)
         current_balance = profile.current_available_balance if profile else Decimal("0.00")
@@ -336,6 +357,7 @@ class CashFlowForecaster:
                 )
             )
 
+        self._forecast_cache[cache_key] = states
         return states
 
     def get_minimum_projected_balance(

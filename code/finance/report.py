@@ -1,6 +1,7 @@
 """Phase 4 report generation and diagnostic formatting."""
 
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -91,7 +92,8 @@ def build_phase4_report(
 
         # Count historical events
         raw_events = data_store.get_user_events(user_id)
-        hist_events = [e for e in raw_events if pd.to_datetime(e.event_date) <= as_of]
+        as_of_d = as_of.date() if hasattr(as_of, "date") else as_of
+        hist_events = [e for e in raw_events if (e.event_date if isinstance(e.event_date, date) else e.event_date) <= as_of_d]
         total_historical_events += len(hist_events)
 
         # Run 90-day balance simulation
