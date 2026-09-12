@@ -1,0 +1,5 @@
+log.txt
+.env
+__pycache__/
+*.pyc
+.gemini/
