@@ -25,8 +25,8 @@ The BUYorNOT financial decision system employs a 100% deterministic, zero-halluc
 
 | Metric | Value |
 | :--- | :--- |
-| **Total Execution Runtime** | 12.88 seconds |
-| **Average Decision Latency** | 51.5 ms / request |
+| **Total Execution Runtime** | 12.84 seconds |
+| **Average Decision Latency** | 51.3 ms / request |
 | **Floating Point Arithmetic Errors** | 0 (Strict `Decimal` arithmetic) |
 | **Deterministic Seed Required** | None (100% deterministic state machine) |
 

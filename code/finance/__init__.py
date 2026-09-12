@@ -31,14 +31,18 @@ from finance.forecast import CashFlowForecaster
 from finance.recurrence import RecurringPatternDetector
 from finance.report import (
     Phase4Report,
+    Phase5Report,
     build_phase4_report,
+    build_phase5_report,
     format_phase4_report,
+    format_phase5_report,
 )
 from finance.state import (
     FinancialState,
     RecurringPattern,
 )
 from finance.decision import (
+    Decision,
     DecisionEngine,
     PlanCandidate,
     calculate_amount_safe_to_pay,
@@ -71,6 +75,7 @@ __all__ = [
     "Phase4Report",
     "build_phase4_report",
     "format_phase4_report",
+    "Decision",
     "DecisionEngine",
     "PlanCandidate",
     "calculate_amount_safe_to_pay",

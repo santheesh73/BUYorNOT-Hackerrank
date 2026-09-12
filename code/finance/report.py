@@ -186,3 +186,135 @@ def format_phase4_report(report: Phase4Report) -> str:
         f"Phase 4 status: {report.status}",
     ]
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class Phase5Report:
+    """Exact Phase 5 report dataclass conforming to Section 44 specification."""
+
+    requests_evaluated: int
+    affordable_now_count: int
+    affordable_with_plan_count: int
+    affordable_later_count: int
+    not_affordable_count: int
+
+    full_payment_count: int
+    partial_payment_count: int
+    installments_count: int
+    wait_count: int
+    not_recommended_count: int
+
+    candidates_generated: int
+    candidates_validated: int
+    candidates_rejected: int
+
+    safety_violations: int
+    deadline_violations: int
+    preference_violations: int
+    payment_plan_violations: int
+    spending_change_violations: int
+    explanation_inconsistencies: int
+    temporal_leaks: int
+
+    output_requests: int
+    output_rows: int
+    output_columns: int
+
+    status: str
+
+
+def build_phase5_report(
+    decisions: list[Any],
+    decision_engine: Any,
+    output_rows: int = 250,
+    output_columns: int = 8,
+) -> Phase5Report:
+    """Construct Phase5Report from actual evaluation results and engine metrics."""
+    import collections
+    status_counts = collections.Counter(d.affordability_status for d in decisions)
+    method_counts = collections.Counter(d.recommended_payment_method for d in decisions)
+
+    has_errors = (
+        decision_engine.safety_violations_count > 0
+        or decision_engine.deadline_violations_count > 0
+        or decision_engine.preference_violations_count > 0
+        or decision_engine.payment_plan_violations_count > 0
+        or decision_engine.spending_change_violations_count > 0
+        or decision_engine.explanation_inconsistencies_count > 0
+        or decision_engine.temporal_leaks_count > 0
+        or len(decisions) != output_rows
+    )
+
+    return Phase5Report(
+        requests_evaluated=len(decisions),
+        affordable_now_count=status_counts["affordable_now"],
+        affordable_with_plan_count=status_counts["affordable_with_plan"],
+        affordable_later_count=status_counts["affordable_later"],
+        not_affordable_count=status_counts["not_affordable"],
+        full_payment_count=method_counts["full_payment"],
+        partial_payment_count=method_counts["partial_payment"],
+        installments_count=method_counts["installments"],
+        wait_count=method_counts["wait"],
+        not_recommended_count=method_counts["not_recommended"],
+        candidates_generated=decision_engine.candidates_generated_count,
+        candidates_validated=decision_engine.candidates_validated_count,
+        candidates_rejected=decision_engine.candidates_rejected_count,
+        safety_violations=decision_engine.safety_violations_count,
+        deadline_violations=decision_engine.deadline_violations_count,
+        preference_violations=decision_engine.preference_violations_count,
+        payment_plan_violations=decision_engine.payment_plan_violations_count,
+        spending_change_violations=decision_engine.spending_change_violations_count,
+        explanation_inconsistencies=decision_engine.explanation_inconsistencies_count,
+        temporal_leaks=decision_engine.temporal_leaks_count,
+        output_requests=len(decisions),
+        output_rows=output_rows,
+        output_columns=output_columns,
+        status="FAIL" if has_errors else "PASS",
+    )
+
+
+def format_phase5_report(report: Phase5Report) -> str:
+    """Format Phase5Report conforming strictly to Section 44 CLI layout."""
+    lines = [
+        "DECISION ENGINE",
+        "===============",
+        "",
+        f"Requests evaluated: {report.requests_evaluated}",
+        "",
+        "AFFORDABILITY",
+        f"- Affordable now: {report.affordable_now_count}",
+        f"- Affordable with plan: {report.affordable_with_plan_count}",
+        f"- Affordable later: {report.affordable_later_count}",
+        f"- Not affordable: {report.not_affordable_count}",
+        "",
+        "RECOMMENDATIONS",
+        f"- Full payment: {report.full_payment_count}",
+        f"- Partial payment: {report.partial_payment_count}",
+        f"- Installments: {report.installments_count}",
+        f"- Wait: {report.wait_count}",
+        f"- Not recommended: {report.not_recommended_count}",
+        "",
+        "PLANS",
+        f"- Candidates generated: {report.candidates_generated}",
+        f"- Candidates validated: {report.candidates_validated}",
+        f"- Candidates rejected: {report.candidates_rejected}",
+        "",
+        "VALIDATION",
+        f"- Safety violations: {report.safety_violations}",
+        f"- Deadline violations: {report.deadline_violations}",
+        f"- Preference violations: {report.preference_violations}",
+        f"- Payment-plan violations: {report.payment_plan_violations}",
+        f"- Spending-change violations: {report.spending_change_violations}",
+        f"- Explanation inconsistencies: {report.explanation_inconsistencies}",
+        f"- Temporal leaks: {report.temporal_leaks}",
+        "",
+        "OUTPUT",
+        f"- Requests: {report.output_requests}",
+        f"- Output rows: {report.output_rows}",
+        f"- Output columns: {report.output_columns}",
+        "",
+        "RESULT",
+        f"Phase 5 status: {report.status}",
+    ]
+    return "\n".join(lines)
+

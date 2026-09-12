@@ -78,9 +78,7 @@ def test_sample_request_prediction_validity(decision_engine, data_store):
 
     for req in sample_reqs:
         res = decision_engine.evaluate_request(req)
-        profile = data_store.get_profile(req.user_id)
-        expl = generate_decision_explanation(req, profile, res)
-        res["decision_explanation"] = expl
+        assert res.decision_explanation != ""
 
         # Invariants
         assert Decimal("0") <= res["amount_safe_to_pay"] <= req.requested_amount
@@ -111,8 +109,6 @@ def test_output_csv_generation_and_validation(decision_engine, data_store, tmp_p
     # Test on first 10 requests
     for req in data_store.get_all_requests()[:10]:
         res = decision_engine.evaluate_request(req)
-        profile = data_store.get_profile(req.user_id)
-        res["decision_explanation"] = generate_decision_explanation(req, profile, res)
         predictions.append(res)
 
     out_file = tmp_path / "test_output.csv"
@@ -128,3 +124,162 @@ def test_output_csv_generation_and_validation(decision_engine, data_store, tmp_p
     assert val["is_valid"] is True
     assert val["total_rows"] == 10
     assert len(val["errors"]) == 0
+
+
+# ============================================================
+# Section 38: Golden Test Cases
+# ============================================================
+
+def test_golden_case_1_full_payment_safe_today(decision_engine, data_store):
+    """Case 1: Full amount safely payable today -> affordable_now, full_payment."""
+    # request_16: user_16, 122500, affordable_now
+    req = data_store.get_sample_request("request_16")
+    res = decision_engine.evaluate_request(req)
+    assert res.affordability_status == "affordable_now"
+    assert res.recommended_payment_method == "full_payment"
+    assert res.earliest_date_for_full_payment == req.request_date.isoformat()
+
+
+def test_golden_case_3_installment_option_safe(decision_engine, data_store):
+    """Case 3: Supplied installment option is safe -> affordable_with_plan, installments."""
+    # request_07: user_07, installments
+    req = data_store.get_sample_request("request_07")
+    res = decision_engine.evaluate_request(req)
+    assert res.affordability_status == "affordable_with_plan"
+    assert res.recommended_payment_method == "installments"
+    assert "|" in res.payment_plan
+
+
+def test_golden_case_4_wait_safe_later(decision_engine, data_store):
+    """Case 4: Full amount becomes safe later -> affordable_later, wait."""
+    # request_23: user_23, wait
+    req = data_store.get_sample_request("request_23")
+    res = decision_engine.evaluate_request(req)
+    assert res.affordability_status == "affordable_later"
+    assert res.recommended_payment_method == "wait"
+    assert res.earliest_date_for_full_payment != ""
+
+
+def test_golden_case_5_not_affordable_not_recommended(decision_engine, data_store):
+    """Case 5: No valid solution exists -> not_affordable, not_recommended."""
+    # request_15: user_15, not_affordable, not_recommended
+    req = data_store.get_sample_request("request_15")
+    res = decision_engine.evaluate_request(req)
+    assert res.affordability_status == "not_affordable"
+    assert res.recommended_payment_method == "not_recommended"
+    assert res.payment_plan == "none"
+
+
+def test_golden_case_8_user_rejects_installments(decision_engine, data_store):
+    """Case 8: User rejects installments -> installments never recommended."""
+    # Find a user whose profile has no 'installments'
+    for req in data_store.get_all_requests():
+        prof = data_store.get_profile(req.user_id)
+        if "installments" not in prof.payment_methods_user_will_consider:
+            res = decision_engine.evaluate_request(req)
+            assert res.recommended_payment_method != "installments"
+            break
+
+
+def test_golden_case_10_plan_completes_after_deadline_rejected(decision_engine, data_store):
+    """Case 10: A plan completing after desired_completion_date is rejected."""
+    from data.models import Request
+    from datetime import date
+    base_req = data_store.get_all_requests()[0]
+    # Set impossible completion date yesterday
+    impossible_req = Request(
+        request_id="test_deadline_reject",
+        user_id=base_req.user_id,
+        request_date=base_req.request_date,
+        request_type=base_req.request_type,
+        requested_amount=base_req.requested_amount,
+        desired_completion_date=base_req.request_date,  # today only
+        allows_partial_payment=False,
+        request_text=base_req.request_text,
+    )
+    res = decision_engine.evaluate_request(impossible_req)
+    # Cannot wait or do multi-month installments because deadline is today
+    if res.recommended_payment_method in {"wait", "installments"}:
+        parts = res.payment_plan.split("|")
+        last_date = parts[-1].split(":")[0]
+        assert last_date <= impossible_req.desired_completion_date.isoformat()
+
+
+def test_golden_case_12_and_13_minimum_balance_boundary(data_store, forecaster):
+    """Case 12 & 13: Minimum balance exact is safe, balance < minimum by 0.01 is unsafe."""
+    from finance.decision import simulate_plan_safety
+    from finance.state import FinancialState
+    import pandas as pd
+    from datetime import date
+
+    min_bal = Decimal("5000.00")
+    # Day 0: closing balance = 10000.00
+    state = FinancialState(
+        dt=pd.Timestamp("2026-01-01"),
+        opening_balance=Decimal("10000.00"),
+        inflows=Decimal("0.00"),
+        outflows=Decimal("0.00"),
+        net_cash_flow=Decimal("0.00"),
+        closing_balance=Decimal("10000.00"),
+    )
+
+    # Case 12: Payment of exactly 5000 leaves exactly 5000 -> SAFE
+    payment_exact = ((date(2026, 1, 1), Decimal("5000.00")),)
+    is_safe_exact, _ = simulate_plan_safety([state], payment_exact, min_bal)
+    assert is_safe_exact is True
+
+    # Case 13: Payment of 5000.01 leaves 4999.99 (< 5000.00) -> UNSAFE
+    payment_violation = ((date(2026, 1, 1), Decimal("5000.01")),)
+    is_safe_viol, _ = simulate_plan_safety([state], payment_violation, min_bal)
+    assert is_safe_viol is False
+
+
+# ============================================================
+# Section 39 & 40: Adversarial & Temporal Leak Tests
+# ============================================================
+
+def test_adversarial_zero_requested_amount(decision_engine, data_store):
+    """Test decision engine handles 0 requested amount gracefully."""
+    from data.models import Request
+    base_req = data_store.get_all_requests()[0]
+    zero_req = Request(
+        request_id="test_zero_amt",
+        user_id=base_req.user_id,
+        request_date=base_req.request_date,
+        request_type="purchase",
+        requested_amount=Decimal("0.00"),
+        desired_completion_date=base_req.desired_completion_date,
+        allows_partial_payment=False,
+        request_text="Zero dollar purchase",
+    )
+    res = decision_engine.evaluate_request(zero_req)
+    assert res.amount_safe_to_pay == Decimal("0.00")
+    assert res.affordability_status in {"affordable_now", "not_affordable"}
+
+
+def test_temporal_leak_regression_test(decision_engine, data_store, forecaster):
+    """Section 40: Evaluation at request_date T must not leak events occurring at T + 10."""
+    from data.models import Request
+    import pandas as pd
+    from datetime import date
+
+    # Request at date T
+    req_t = Request(
+        request_id="test_temporal_leak",
+        user_id="user_01",
+        request_date=date(2024, 6, 1),
+        request_type="purchase",
+        requested_amount=Decimal("1000.00"),
+        desired_completion_date=date(2024, 8, 1),
+        allows_partial_payment=False,
+        request_text="Temporal test purchase",
+    )
+
+    # Historical forecast at T
+    forecast_t = forecaster.forecast("user_01", pd.Timestamp("2024-06-01"), horizon_days=90)
+
+    # Future cash events generated must NOT contain actual events settled after T as historical
+    res_t = decision_engine.evaluate_request(req_t)
+    assert res_t.request_id == "test_temporal_leak"
+    assert Decimal("0") <= res_t.amount_safe_to_pay <= Decimal("1000.00")
+

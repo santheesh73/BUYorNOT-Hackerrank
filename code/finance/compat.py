@@ -178,3 +178,18 @@ class FinancialEngine:
         """Detect recurring patterns from events occurring on or before as_of."""
         return self.get_forecaster().detect_recurring_patterns(events=events, as_of=as_of)
 
+    def decide(
+        self,
+        request: Any,
+        profile: Any,
+        forecast: Any,
+        payment_options: Any,
+    ) -> Any:
+        """Evaluate financial decision conforming to Phase 5 specification."""
+        from data.store import DataStore
+        from finance.decision import DecisionEngine
+        store = DataStore.load_from_repo(self.data_path)
+        engine = DecisionEngine(data_store=store, forecaster=self.get_forecaster())
+        return engine.decide(request, profile, forecast, payment_options)
+
+

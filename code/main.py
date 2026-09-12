@@ -164,9 +164,6 @@ def main() -> int:
 
     for req in all_requests:
         res = decision_engine.evaluate_request(req)
-        profile = store.get_profile(req.user_id)
-        expl = generate_decision_explanation(req, profile, res)
-        res["decision_explanation"] = expl
         predictions.append(res)
 
         status_counts[res["affordability_status"]] += 1
@@ -200,36 +197,20 @@ def main() -> int:
     )
 
     # 13. Phase 5 Diagnostic Summary
-    sep = "=" * 60
-    summary = f"""
-{sep}
-BUYorNOT — Phase 5 Decision & Recommendation Engine Summary
-{sep}
-Evaluation Requests Processed : {len(predictions)}
-Total Output Rows Written     : {val_result['total_rows']}
-Output Contract Validated     : YES (0 errors, 0 warnings)
-Output CSV Destination        : {output_path}
-Usage Report Destination      : {usage_report_path}
-Total Pipeline Execution Time : {elapsed:.2f}s
+    from finance.report import build_phase5_report, format_phase5_report
+    phase5_report = build_phase5_report(
+        decisions=predictions,
+        decision_engine=decision_engine,
+        output_rows=val_result["total_rows"],
+        output_columns=8,
+    )
+    phase5_text = format_phase5_report(phase5_report)
+    print("\n" + phase5_text + "\n")
 
-Affordability Status Distribution:
-  affordable_now        : {status_counts['affordable_now']:4d} ({status_counts['affordable_now']/len(predictions)*100:.1f}%)
-  affordable_with_plan  : {status_counts['affordable_with_plan']:4d} ({status_counts['affordable_with_plan']/len(predictions)*100:.1f}%)
-  affordable_later      : {status_counts['affordable_later']:4d} ({status_counts['affordable_later']/len(predictions)*100:.1f}%)
-  not_affordable        : {status_counts['not_affordable']:4d} ({status_counts['not_affordable']/len(predictions)*100:.1f}%)
+    if phase5_report.status != "PASS":
+        logger.error("Phase 5 report status is FAIL")
+        return 1
 
-Recommended Payment Method Distribution:
-  full_payment          : {method_counts['full_payment']:4d} ({method_counts['full_payment']/len(predictions)*100:.1f}%)
-  partial_payment       : {method_counts['partial_payment']:4d} ({method_counts['partial_payment']/len(predictions)*100:.1f}%)
-  installments          : {method_counts['installments']:4d} ({method_counts['installments']/len(predictions)*100:.1f}%)
-  wait                  : {method_counts['wait']:4d} ({method_counts['wait']/len(predictions)*100:.1f}%)
-  not_recommended       : {method_counts['not_recommended']:4d} ({method_counts['not_recommended']/len(predictions)*100:.1f}%)
-
-Plan Details:
-  Requests with Spending Changes : {spending_changes_count:4d} ({spending_changes_count/len(predictions)*100:.1f}%)
-{sep}
-"""
-    print(summary)
     logger.info("Phase 5 pipeline executed successfully!")
     return 0
 

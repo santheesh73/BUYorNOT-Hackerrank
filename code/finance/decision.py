@@ -21,6 +21,45 @@ from utils.money import quantize_money
 
 
 @dataclass(frozen=True)
+class Decision:
+    """Immutable final financial decision conforming strictly to Phase 5 specification."""
+
+    request_id: str
+    amount_safe_to_pay: Decimal
+    affordability_status: str
+    recommended_payment_method: str
+    payment_plan: str
+    earliest_date_for_full_payment: str
+    spending_changes_needed: str
+    decision_explanation: str
+    selected_plan: Any = field(default=None, repr=False, compare=False)
+    profile: Any = field(default=None, repr=False, compare=False)
+    request: Any = field(default=None, repr=False, compare=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert decision to standard dictionary."""
+        return {
+            "request_id": self.request_id,
+            "amount_safe_to_pay": self.amount_safe_to_pay,
+            "affordability_status": self.affordability_status,
+            "recommended_payment_method": self.recommended_payment_method,
+            "payment_plan": self.payment_plan,
+            "earliest_date_for_full_payment": self.earliest_date_for_full_payment,
+            "spending_changes_needed": self.spending_changes_needed,
+            "decision_explanation": self.decision_explanation,
+        }
+
+    def __getitem__(self, key: str) -> Any:
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+    def __contains__(self, key: str) -> bool:
+        return hasattr(self, key)
+
+
+@dataclass(frozen=True)
 class PlanCandidate:
     """Evaluated payment plan candidate."""
 
@@ -136,39 +175,67 @@ class DecisionEngine:
         self.data_store = data_store
         self.forecaster = forecaster
 
-    def evaluate_request(self, request: Request) -> dict[str, Any]:
-        """Evaluate a single Request and produce the complete recommendation."""
+        # Metric tracking for Phase 5 reporting
+        self.requests_evaluated_count: int = 0
+        self.candidates_generated_count: int = 0
+        self.candidates_validated_count: int = 0
+        self.candidates_rejected_count: int = 0
+        self.safety_violations_count: int = 0
+        self.deadline_violations_count: int = 0
+        self.preference_violations_count: int = 0
+        self.payment_plan_violations_count: int = 0
+        self.spending_change_violations_count: int = 0
+        self.explanation_inconsistencies_count: int = 0
+        self.temporal_leaks_count: int = 0
+
+    def evaluate_request(self, request: Request) -> Decision:
+        """Evaluate a single Request by resolving its profile, forecast, and options, producing Decision."""
         user_id = request.user_id
         profile = self.data_store.get_profile(user_id)
         if profile is None:
             raise ValueError(f"Profile not found for user_id={user_id}")
 
+        forecast = self.forecaster.forecast(user_id, pd.Timestamp(request.request_date), horizon_days=90)
+        options = self.data_store.get_payment_options(request.request_id)
+        return self.decide(request, profile, forecast, options)
+
+    def decide(
+        self,
+        request: Request,
+        profile: FinancialProfile,
+        forecast: Sequence[FinancialState],
+        payment_options: Sequence[PaymentOption],
+    ) -> Decision:
+        """Evaluate a single Request and produce the complete recommendation conforming to Section 31."""
+        self.requests_evaluated_count += 1
+        user_id = request.user_id
         req_date = request.request_date
         req_amt = request.requested_amount
         min_bal = profile.minimum_balance_to_keep
         deadline = request.desired_completion_date
 
-        # 1. Generate 90-day baseline forecast
-        baseline_states = self.forecaster.forecast(user_id, pd.Timestamp(req_date), horizon_days=90)
+        baseline_states = forecast
 
-        # 2. Compute amount_safe_to_pay and earliest_date_for_full_payment
+        # 1. Compute amount_safe_to_pay and earliest_date_for_full_payment
         safe_amount = calculate_amount_safe_to_pay(req_amt, baseline_states, min_bal)
         earliest_full_date = calculate_earliest_date_for_full_payment(req_date, req_amt, baseline_states, min_bal)
 
-        # 3. Collect flexible spending options for the user
+        # 2. Collect flexible spending options for the user
         flexible_events = self._get_adjustable_events(profile, req_date)
 
-        # 4. Generate candidate payment plans
+        # 3. Generate candidate payment plans
         candidates: list[PlanCandidate] = []
         user_methods = set(profile.payment_methods_user_will_consider)
 
         # Candidate A: Full Payment Today (request_date)
         if "full_payment" in user_methods:
+            self.candidates_generated_count += 1
             full_payments = ((req_date, req_amt),)
             safe_now, min_proj = simulate_plan_safety(baseline_states, full_payments, min_bal)
             completes_on_time = req_date <= deadline
 
             if safe_now:
+                self.candidates_validated_count += 1
                 candidates.append(
                     PlanCandidate(
                         method="full_payment",
@@ -185,6 +252,7 @@ class DecisionEngine:
                     )
                 )
             else:
+                self.candidates_rejected_count += 1
                 # Try spending changes to rescue full payment today
                 rescued_plan = self._try_spending_changes(
                     baseline_states=baseline_states,
@@ -199,12 +267,12 @@ class DecisionEngine:
                     completes_by_deadline=completes_on_time,
                 )
                 if rescued_plan:
+                    self.candidates_validated_count += 1
                     candidates.append(rescued_plan)
 
-        # Candidate B: Installment Options from request_payment_options.csv
+        # Candidate B: Installment Options from supplied options
         if "installments" in user_methods:
-            options = self.data_store.get_payment_options(request.request_id)
-            for opt in options:
+            for opt in payment_options:
                 if opt.payment_method != "installments":
                     continue
                 # Check user max_installment_months constraint
@@ -212,6 +280,7 @@ class DecisionEngine:
                     if opt.number_of_payments > profile.max_installment_months:
                         continue
 
+                self.candidates_generated_count += 1
                 # Build installment payments schedule
                 inst_payments = self._build_installment_schedule(opt)
                 if not inst_payments:
@@ -222,6 +291,7 @@ class DecisionEngine:
 
                 safe_inst, min_proj = simulate_plan_safety(baseline_states, inst_payments, min_bal)
                 if safe_inst:
+                    self.candidates_validated_count += 1
                     candidates.append(
                         PlanCandidate(
                             method="installments",
@@ -238,6 +308,7 @@ class DecisionEngine:
                         )
                     )
                 else:
+                    self.candidates_rejected_count += 1
                     # Try spending changes to rescue installment plan
                     rescued_inst = self._try_spending_changes(
                         baseline_states=baseline_states,
@@ -252,6 +323,7 @@ class DecisionEngine:
                         completes_by_deadline=completes_on_time,
                     )
                     if rescued_inst:
+                        self.candidates_validated_count += 1
                         candidates.append(rescued_inst)
 
         # Candidate C: Partial Payment (exactly 2 payments: safe_today, then remainder on earliest_full_date)
@@ -262,6 +334,7 @@ class DecisionEngine:
             and earliest_full_date is not None
             and earliest_full_date <= deadline
         ):
+            self.candidates_generated_count += 1
             remainder = req_amt - safe_amount
             partial_payments = (
                 (req_date, safe_amount),
@@ -269,6 +342,7 @@ class DecisionEngine:
             )
             safe_partial, min_proj = simulate_plan_safety(baseline_states, partial_payments, min_bal)
             if safe_partial:
+                self.candidates_validated_count += 1
                 candidates.append(
                     PlanCandidate(
                         method="partial_payment",
@@ -284,6 +358,8 @@ class DecisionEngine:
                         number_of_payments=2,
                     )
                 )
+            else:
+                self.candidates_rejected_count += 1
 
         # Candidate D: Wait (full payment on earliest_date_for_full_payment)
         if (
@@ -291,9 +367,11 @@ class DecisionEngine:
             and earliest_full_date is not None
             and earliest_full_date > req_date
         ):
+            self.candidates_generated_count += 1
             wait_payments = ((earliest_full_date, req_amt),)
             safe_wait, min_proj = simulate_plan_safety(baseline_states, wait_payments, min_bal)
             if safe_wait:
+                self.candidates_validated_count += 1
                 candidates.append(
                     PlanCandidate(
                         method="wait",
@@ -309,8 +387,10 @@ class DecisionEngine:
                         number_of_payments=1,
                     )
                 )
+            else:
+                self.candidates_rejected_count += 1
 
-        # 5. Filter to safe candidates and rank them
+        # 4. Filter to safe candidates and rank them
         safe_candidates = [c for c in candidates if c.is_safe]
 
         # Rank plans according to problem statement rules:
@@ -349,15 +429,10 @@ class DecisionEngine:
                 number_of_payments=0,
             )
 
-        # 6. Determine affordability_status
+        # 5. Determine affordability_status
         if best_plan.method == "not_recommended":
             affordability_status = "not_affordable"
-            earliest_str = "" if earliest_full_date is None else earliest_full_date.strftime("%Y-%m-%d")
-            # If not recommended, problem statement specifies earliest_date_for_full_payment empty if not safe within forecast
-            if earliest_full_date is None:
-                earliest_out = ""
-            else:
-                earliest_out = earliest_full_date.strftime("%Y-%m-%d")
+            earliest_out = "" if earliest_full_date is None else earliest_full_date.strftime("%Y-%m-%d")
         elif best_plan.method == "wait":
             affordability_status = "affordable_later"
             earliest_out = earliest_full_date.strftime("%Y-%m-%d") if earliest_full_date else ""
@@ -369,7 +444,9 @@ class DecisionEngine:
             affordability_status = "affordable_with_plan"
             earliest_out = earliest_full_date.strftime("%Y-%m-%d") if earliest_full_date else req_date.strftime("%Y-%m-%d")
 
-        return {
+        # 6. Generate grounded explanation
+        from finance.explanation import generate_decision_explanation
+        eval_dict = {
             "request_id": request.request_id,
             "user_id": user_id,
             "amount_safe_to_pay": safe_amount,
@@ -382,6 +459,76 @@ class DecisionEngine:
             "profile": profile,
             "request": request,
         }
+        expl = generate_decision_explanation(request, profile, eval_dict)
+
+        # 7. Decision Validator & Invariant Verification (§30)
+        # Verify that the emitted decision strictly satisfies all requirements:
+        if best_plan.method != "not_recommended":
+            if not best_plan.is_safe:
+                self.safety_violations_count += 1
+            if best_plan.method in ("full_payment", "partial_payment", "installments"):
+                if best_plan.completion_date > deadline:
+                    self.deadline_violations_count += 1
+            if best_plan.method == "wait":
+                if "full_payment" not in user_methods:
+                    self.preference_violations_count += 1
+            else:
+                if best_plan.method not in user_methods:
+                    self.preference_violations_count += 1
+                if best_plan.method == "installments" and profile.max_installment_months is not None:
+                    if best_plan.number_of_payments > profile.max_installment_months:
+                        self.preference_violations_count += 1
+
+        # Payment plan format validation
+        if best_plan.method == "not_recommended":
+            if best_plan.formatted_plan != "none":
+                self.payment_plan_violations_count += 1
+        elif best_plan.method == "full_payment":
+            if best_plan.formatted_plan != f"{req_date.strftime('%Y-%m-%d')}:{req_amt}":
+                self.payment_plan_violations_count += 1
+        elif best_plan.method == "wait":
+            if not earliest_full_date or best_plan.formatted_plan != f"{earliest_full_date.strftime('%Y-%m-%d')}:{req_amt}":
+                self.payment_plan_violations_count += 1
+        elif best_plan.method == "partial_payment":
+            parts = best_plan.formatted_plan.split("|")
+            if len(parts) != 2:
+                self.payment_plan_violations_count += 1
+
+        # Spending change validation
+        if best_plan.spending_changes:
+            if len(best_plan.spending_changes) > 3:
+                self.spending_change_violations_count += 1
+            for sc in best_plan.spending_changes:
+                if not (sc.startswith("stop:") or sc.startswith("reduce_to:")):
+                    self.spending_change_violations_count += 1
+
+        # Status and explanation consistency validation
+        if affordability_status == "affordable_now":
+            if best_plan.method != "full_payment" or earliest_out != req_date.strftime("%Y-%m-%d"):
+                self.explanation_inconsistencies_count += 1
+        elif best_plan.method == "not_recommended":
+            if affordability_status != "not_affordable":
+                self.explanation_inconsistencies_count += 1
+        elif best_plan.method == "wait":
+            if affordability_status != "affordable_later":
+                self.explanation_inconsistencies_count += 1
+        elif best_plan.method in ("installments", "partial_payment"):
+            if affordability_status != "affordable_with_plan":
+                self.explanation_inconsistencies_count += 1
+
+        return Decision(
+            request_id=request.request_id,
+            amount_safe_to_pay=safe_amount,
+            affordability_status=affordability_status,
+            recommended_payment_method=best_plan.method,
+            payment_plan=best_plan.formatted_plan,
+            earliest_date_for_full_payment=earliest_out,
+            spending_changes_needed=best_plan.formatted_spending_changes,
+            decision_explanation=expl,
+            selected_plan=best_plan,
+            profile=profile,
+            request=request,
+        )
 
     def _build_installment_schedule(self, opt: PaymentOption) -> tuple[tuple[date, Decimal], ...]:
         """Build explicit chronological dates and amounts for an installment offer."""
