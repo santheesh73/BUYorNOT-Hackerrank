@@ -102,7 +102,10 @@ def validate_output_csv(output_path: Path, requests_path: Path) -> dict[str, Any
     if actual_ids != expected_ids:
         errors.append(f"Request IDs mismatch! Expected {len(expected_ids)} rows, got {len(actual_ids)}")
 
-    # 3. Value validation
+    # Build request mapping for deep invariant checking
+    req_map = {row["request_id"]: row for _, row in req_df.iterrows()}
+
+    # 3. Value and Invariant validation
     for idx, row in out_df.iterrows():
         req_id = row["request_id"]
         status = row["affordability_status"]
@@ -111,26 +114,125 @@ def validate_output_csv(output_path: Path, requests_path: Path) -> dict[str, Any
         earliest = row["earliest_date_for_full_payment"]
         spend = row["spending_changes_needed"]
         expl = row["decision_explanation"]
+        safe_str = row["amount_safe_to_pay"]
 
+        req_row = req_map.get(req_id)
+        if req_row is None:
+            errors.append(f"Row {idx} ({req_id}): Unknown request_id")
+            continue
+
+        req_date = str(req_row["request_date"]).strip() if "request_date" in req_row else None
+        req_amt = Decimal(str(req_row["requested_amount"])) if "requested_amount" in req_row else None
+
+        # Check safe amount
+        try:
+            safe_amt = Decimal(safe_str)
+            if safe_amt < Decimal("0.00"):
+                errors.append(f"Row {idx} ({req_id}): amount_safe_to_pay {safe_amt} is negative")
+            if req_amt is not None and safe_amt > req_amt:
+                errors.append(f"Row {idx} ({req_id}): amount_safe_to_pay {safe_amt} exceeds requested amount {req_amt}")
+        except Exception as e:
+            errors.append(f"Row {idx} ({req_id}): Invalid amount_safe_to_pay numeric value '{safe_str}': {e}")
+
+        # Check status and method
         if status not in ALLOWED_STATUSES:
             errors.append(f"Row {idx} ({req_id}): Invalid status '{status}'")
         if method not in ALLOWED_METHODS:
             errors.append(f"Row {idx} ({req_id}): Invalid method '{method}'")
 
+        # Check explanation
         if not expl.strip():
             errors.append(f"Row {idx} ({req_id}): Empty decision_explanation")
+
+        # Check earliest date for full payment
+        if earliest:
+            try:
+                parse_date(earliest)
+            except Exception:
+                errors.append(f"Row {idx} ({req_id}): Invalid date format for earliest_date_for_full_payment '{earliest}'")
 
         if status == "affordable_now":
             if not earliest:
                 errors.append(f"Row {idx} ({req_id}): earliest_date_for_full_payment must not be empty for affordable_now")
+            elif req_date is not None and earliest != req_date:
+                errors.append(f"Row {idx} ({req_id}): earliest_date_for_full_payment ({earliest}) must equal request_date ({req_date}) for affordable_now")
+            if method != "full_payment":
+                errors.append(f"Row {idx} ({req_id}): method must be full_payment for affordable_now, got '{method}'")
 
         if method == "not_recommended":
             if plan != "none":
                 errors.append(f"Row {idx} ({req_id}): payment_plan must be 'none' for not_recommended")
+            if status != "not_affordable":
+                errors.append(f"Row {idx} ({req_id}): status must be 'not_affordable' for not_recommended, got '{status}'")
 
         if method == "wait":
             if plan == "none":
                 errors.append(f"Row {idx} ({req_id}): payment_plan must not be 'none' for wait")
+            if status != "affordable_later":
+                errors.append(f"Row {idx} ({req_id}): status must be 'affordable_later' for wait, got '{status}'")
+
+        # Check payment plan format & math
+        if plan != "none":
+            plan_parts = plan.split("|")
+            plan_dates = []
+            plan_total = Decimal("0.00")
+            for p_part in plan_parts:
+                if ":" not in p_part:
+                    errors.append(f"Row {idx} ({req_id}): Invalid payment_plan format segment '{p_part}'")
+                    continue
+                p_date_str, p_amt_str = p_part.split(":", 1)
+                try:
+                    p_date = parse_date(p_date_str)
+                    plan_dates.append(p_date)
+                except Exception:
+                    errors.append(f"Row {idx} ({req_id}): Invalid date in payment_plan '{p_date_str}'")
+                try:
+                    p_amt = Decimal(p_amt_str)
+                    if p_amt <= Decimal("0.00"):
+                        errors.append(f"Row {idx} ({req_id}): Non-positive amount in payment_plan '{p_amt_str}'")
+                    plan_total += p_amt
+                except Exception:
+                    errors.append(f"Row {idx} ({req_id}): Invalid numeric amount in payment_plan '{p_amt_str}'")
+
+            # Check chronological order
+            for i in range(len(plan_dates) - 1):
+                if plan_dates[i] > plan_dates[i + 1]:
+                    errors.append(f"Row {idx} ({req_id}): payment_plan dates are not chronological: {plan_dates}")
+
+            if method == "partial_payment":
+                if len(plan_parts) != 2:
+                    errors.append(f"Row {idx} ({req_id}): partial_payment plan must have exactly 2 payments, got {len(plan_parts)}")
+                elif req_amt is not None and plan_total != req_amt:
+                    errors.append(f"Row {idx} ({req_id}): partial_payment total {plan_total} does not match requested amount {req_amt}")
+
+        # Check spending changes format
+        if spend != "none":
+            spend_parts = spend.split("|")
+            if len(spend_parts) > 3:
+                errors.append(f"Row {idx} ({req_id}): spending_changes_needed exceeds maximum of 3 changes: '{spend}'")
+            seen_events = set()
+            for s_part in spend_parts:
+                if s_part.startswith("stop:"):
+                    ev_id = s_part.split(":", 1)[1]
+                elif s_part.startswith("reduce_to:"):
+                    sub_parts = s_part.split(":")
+                    if len(sub_parts) != 3:
+                        errors.append(f"Row {idx} ({req_id}): Invalid reduce_to syntax '{s_part}'")
+                        continue
+                    ev_id = sub_parts[1]
+                    try:
+                        r_amt = Decimal(sub_parts[2])
+                        if r_amt < Decimal("0.00"):
+                            errors.append(f"Row {idx} ({req_id}): Negative amount in reduce_to '{s_part}'")
+                    except Exception:
+                        errors.append(f"Row {idx} ({req_id}): Invalid amount in reduce_to '{s_part}'")
+                else:
+                    errors.append(f"Row {idx} ({req_id}): Invalid spending change format '{s_part}'")
+                    continue
+
+                if ev_id in seen_events:
+                    errors.append(f"Row {idx} ({req_id}): Duplicate event modified in spending changes '{ev_id}'")
+                seen_events.add(ev_id)
 
     return {
         "total_rows": len(out_df),

@@ -171,18 +171,21 @@ def main() -> int:
         if res["spending_changes_needed"] != "none":
             spending_changes_count += 1
 
-    # 10. Write output.csv
-    output_path = root / "dataset" / "output.csv"
+    # 10. Write output.csv to both dataset/output.csv and root output.csv
+    dataset_output_path = root / "dataset" / "output.csv"
+    root_output_path = root / "output.csv"
     requests_path = root / "dataset" / "requests.csv"
-    logger.info("Writing predictions to %s...", output_path)
-    generate_output_csv(predictions, output_path)
+    logger.info("Writing predictions to %s and %s...", dataset_output_path, root_output_path)
+    generate_output_csv(predictions, dataset_output_path)
+    generate_output_csv(predictions, root_output_path)
 
     # 11. Validate output.csv against contract
     logger.info("Validating output.csv against competition contract...")
-    val_result = validate_output_csv(output_path, requests_path)
+    val_result = validate_output_csv(dataset_output_path, requests_path)
+    root_val_result = validate_output_csv(root_output_path, requests_path)
 
-    if not val_result["is_valid"]:
-        logger.error("Output validation failed with errors: %s", val_result["errors"])
+    if not val_result["is_valid"] or not root_val_result["is_valid"]:
+        logger.error("Output validation failed with errors: %s", val_result["errors"] + root_val_result["errors"])
         return 1
 
     elapsed = time.time() - start_time
