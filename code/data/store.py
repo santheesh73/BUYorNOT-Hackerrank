@@ -24,6 +24,7 @@ class DataStore:
     def __init__(self, datasets: LoadedDatasets, indexes: DatasetIndexes | None = None) -> None:
         self.datasets = datasets
         self.indexes = indexes or build_indexes(datasets)
+        self._ledger = None
 
     @classmethod
     def load_from_repo(cls, repo_root: Path | None = None) -> "DataStore":
@@ -128,3 +129,27 @@ class DataStore:
         if from_currency == to_currency:
             return Decimal("1.0")
         return self.indexes.exchange_rates_by_pair.get((rate_date, from_currency, to_currency))
+
+    # Financial Ledger integration
+    def get_ledger(self) -> Any:
+        """Retrieve the FinancialLedger for this store, initializing on demand."""
+        if self._ledger is None:
+            from finance.ledger import FinancialLedger
+            self._ledger = FinancialLedger(
+                events=self.datasets.financial_events,
+                profiles=self.datasets.financial_profiles,
+                exchange_rates=self,
+            )
+        return self._ledger
+
+    def get_user_normalized_events(self, user_id: str) -> list[Any]:
+        """Retrieve normalized financial events for a user."""
+        return self.get_ledger().build_user_ledger(user_id)
+
+    def get_user_cash_flows(self, user_id: str) -> list[Any]:
+        """Retrieve resolved active cash flows for a user."""
+        return self.get_ledger().get_cash_flows(user_id)
+
+    def get_normalized_event(self, event_id: str) -> Any | None:
+        """Retrieve a single normalized event by ID."""
+        return self.get_ledger().get_event(event_id)
