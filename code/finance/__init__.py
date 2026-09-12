@@ -41,6 +41,10 @@ from finance.state import (
     FinancialState,
     RecurringPattern,
 )
+from finance.affordability import (
+    AffordabilityEngine,
+    ScheduleFeasibilityResult,
+)
 from finance.decision import (
     Decision,
     DecisionEngine,
@@ -75,6 +79,8 @@ __all__ = [
     "Phase4Report",
     "build_phase4_report",
     "format_phase4_report",
+    "AffordabilityEngine",
+    "ScheduleFeasibilityResult",
     "Decision",
     "DecisionEngine",
     "PlanCandidate",

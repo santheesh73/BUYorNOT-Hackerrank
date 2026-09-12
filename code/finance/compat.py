@@ -178,6 +178,11 @@ class FinancialEngine:
         """Detect recurring patterns from events occurring on or before as_of."""
         return self.get_forecaster().detect_recurring_patterns(events=events, as_of=as_of)
 
+    def get_affordability_engine(self) -> Any:
+        """Retrieve AffordabilityEngine instance for Phase 6 feasibility primitives."""
+        from finance.affordability import AffordabilityEngine
+        return AffordabilityEngine()
+
     def decide(
         self,
         request: Any,
@@ -189,7 +194,12 @@ class FinancialEngine:
         from data.store import DataStore
         from finance.decision import DecisionEngine
         store = DataStore.load_from_repo(self.data_path)
-        engine = DecisionEngine(data_store=store, forecaster=self.get_forecaster())
+        engine = DecisionEngine(
+            data_store=store,
+            forecaster=self.get_forecaster(),
+            affordability=self.get_affordability_engine(),
+        )
         return engine.decide(request, profile, forecast, payment_options)
+
 
 

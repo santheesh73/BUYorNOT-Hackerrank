@@ -88,92 +88,27 @@ class PlanCandidate:
         return "|".join(self.spending_changes)
 
 
-def calculate_amount_safe_to_pay(
-    requested_amount: Decimal,
-    baseline_states: Sequence[FinancialState],
-    minimum_balance_to_keep: Decimal,
-) -> Decimal:
-    """Calculate the maximum amount safe to pay today before optional spending changes.
-
-    amount_safe_to_pay is between 0 and requested_amount inclusive, such that paying
-    this amount today never drops the closing balance below minimum_balance_to_keep
-    over the 90-day forecast.
-    """
-    if not baseline_states:
-        return Decimal("0.00")
-
-    # The payment occurs on day 0 (request_date) and reduces the balance on every day t >= 0
-    # Therefore, new_min_balance = min_closing_balance - safe_amount >= minimum_balance_to_keep
-    # safe_amount <= min_closing_balance - minimum_balance_to_keep
-    min_closing = min(s.closing_balance for s in baseline_states)
-    buffer = min_closing - minimum_balance_to_keep
-    safe = max(Decimal("0.00"), min(requested_amount, buffer))
-    return quantize_money(safe, 2)
-
-
-def calculate_earliest_date_for_full_payment(
-    request_date: date,
-    requested_amount: Decimal,
-    baseline_states: Sequence[FinancialState],
-    minimum_balance_to_keep: Decimal,
-) -> date | None:
-    """Find the first date T >= request_date where paying requested_amount in full is safe.
-
-    A full payment on date T reduces the closing balance on all days t >= T by requested_amount.
-    For day T to be safe, min(closing_balance for t >= T) - requested_amount >= minimum_balance_to_keep.
-    """
-    for i, state in enumerate(baseline_states):
-        d = state.dt.date()
-        if d < request_date:
-            continue
-        min_balance_after_t = min(s.closing_balance for s in baseline_states[i:])
-        if min_balance_after_t - requested_amount >= minimum_balance_to_keep:
-            return d
-    return None
-
-
-def simulate_plan_safety(
-    baseline_states: Sequence[FinancialState],
-    payments: Sequence[tuple[date, Decimal]],
-    minimum_balance_to_keep: Decimal,
-    spending_relief_by_date: dict[date, Decimal] | None = None,
-) -> tuple[bool, Decimal]:
-    """Simulate applying plan payments and spending relief across the 90-day daily states.
-
-    Returns (is_safe, min_projected_balance).
-    """
-    relief = spending_relief_by_date or {}
-    payments_by_date: dict[date, Decimal] = {}
-    for d, amt in payments:
-        payments_by_date[d] = payments_by_date.get(d, Decimal("0.00")) + amt
-
-    cumulative_payment_impact = Decimal("0.00")
-    cumulative_relief_impact = Decimal("0.00")
-    min_bal = Decimal("Infinity")
-    is_safe = True
-
-    for state in baseline_states:
-        d = state.dt.date()
-        if d in payments_by_date:
-            cumulative_payment_impact += payments_by_date[d]
-        if d in relief:
-            cumulative_relief_impact += relief[d]
-
-        projected_close = state.closing_balance - cumulative_payment_impact + cumulative_relief_impact
-        if projected_close < min_bal:
-            min_bal = projected_close
-        if projected_close < minimum_balance_to_keep:
-            is_safe = False
-
-    return is_safe, (min_bal if min_bal != Decimal("Infinity") else Decimal("0.00"))
+from finance.affordability import (
+    AffordabilityEngine,
+    ScheduleFeasibilityResult,
+    calculate_amount_safe_to_pay,
+    calculate_earliest_date_for_full_payment,
+    simulate_plan_safety,
+)
 
 
 class DecisionEngine:
     """Deterministic financial decision and recommendation engine."""
 
-    def __init__(self, data_store: Any, forecaster: CashFlowForecaster) -> None:
+    def __init__(
+        self,
+        data_store: Any,
+        forecaster: CashFlowForecaster,
+        affordability: AffordabilityEngine | None = None,
+    ) -> None:
         self.data_store = data_store
         self.forecaster = forecaster
+        self.affordability = affordability or AffordabilityEngine()
 
         # Metric tracking for Phase 5 reporting
         self.requests_evaluated_count: int = 0
