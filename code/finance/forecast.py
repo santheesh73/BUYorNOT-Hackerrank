@@ -319,7 +319,7 @@ class CashFlowForecaster:
                     curr_dt = curr_dt.replace(day=min(salary_rescheduled_day, 28))
 
             while curr_dt <= end_dt:
-                if curr_dt > as_of_dt or (curr_dt == as_of_dt and pat.direction == "debit"):
+                if curr_dt > as_of_dt:
                     d_key = (curr_dt.date(), cat)
                     # Avoid double-counting if a scheduled event in dataset already covers this date/category
                     if d_key not in covered_dates_by_cat:

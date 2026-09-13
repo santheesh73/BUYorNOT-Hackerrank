@@ -49,7 +49,7 @@ class RecurringPatternDetector:
                 # Exclude one-off bonuses, commissions, arrears, windfalls, temporary/seasonal/overtime items
                 if any(k in desc_lower for k in [
                     "bonus", "arrears", "commission", "seasonal", "temporary", "prorated",
-                    "payout", "earnings", "overtime", "performance", "net salary"
+                    "overtime", "performance"
                 ]):
                     continue
 
