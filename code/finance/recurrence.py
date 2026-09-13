@@ -46,16 +46,18 @@ class RecurringPatternDetector:
             direction = "credit" if ev.amount > 0 else "debit"
 
             if cat_lower == "salary" and direction == "credit":
-                # Exclude one-off bonuses, commissions, arrears, windfalls, temporary/seasonal/overtime items
+                # Exclude one-off bonuses, commissions, arrears, windfalls, temporary/seasonal/overtime/variable gig items
                 if any(k in desc_lower for k in [
                     "bonus", "arrears", "commission", "seasonal", "temporary", "prorated",
-                    "overtime", "performance"
+                    "payout", "earnings", "overtime", "performance", "net salary"
                 ]):
                     continue
 
             grouped[(cat_lower, direction)].append(ev)
 
         patterns: list[RecurringPattern] = []
+
+        covered_today = {e.category.lower() for e in history if e.dt.date() == as_of_dt.date()}
 
         # 3. Analyze each candidate group
         for (cat, direction), cat_events in sorted(grouped.items()):
@@ -133,10 +135,15 @@ class RecurringPatternDetector:
             else:
                 inferred_amount = Decimal(str(statistics.median(amounts)))
 
-            # Determine next occurrence strictly > as_of_dt
+            # Determine day_of_month using mode across all occurrences
+            from collections import Counter
+            day_of_month = Counter(d.day for d in dates).most_common(1)[0][0]
+
+            # Determine next occurrence: if due on as_of_dt and not already covered by an actual event on as_of_dt, it is due on as_of_dt!
             last_dt = dates[-1]
             next_dt = last_dt
-            day_of_month = last_dt.day
+            if is_monthly:
+                next_dt = next_dt.replace(day=min(day_of_month, 28))
 
             while next_dt <= as_of_dt:
                 if is_monthly:

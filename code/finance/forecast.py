@@ -208,8 +208,10 @@ class CashFlowForecaster:
             ev_date = ev.settlement_date or ev.event_date
             ev_dt = pd.to_datetime(ev_date)
 
-            # Must be strictly after as_of and within horizon
-            if as_of_dt < ev_dt <= end_dt:
+            # Include events within horizon; if on as_of_dt, include if not already settled in history
+            if as_of_dt <= ev_dt <= end_dt:
+                if ev_dt.date() == as_of_dt.date() and (as_of_dt.date(), ev.category.lower()) in covered_dates_by_cat:
+                    continue
                 st = ev.status.lower()
                 if st in ("failed", "cancelled", "unrealized"):
                     continue
@@ -318,8 +320,20 @@ class CashFlowForecaster:
                 except Exception:
                     curr_dt = curr_dt.replace(day=min(salary_rescheduled_day, 28))
 
+            # Check if there is an occurrence due on as_of_dt itself that hasn't settled yet
+            due_on_as_of = False
+            if pat.interval_days == 30:
+                if as_of_dt.day == day_of_month:
+                    due_on_as_of = True
+            else:
+                if (pat.next_occurrence - as_of_dt).days % pat.interval_days == 0:
+                    due_on_as_of = True
+
+            if due_on_as_of and (as_of_dt.date(), cat) not in covered_dates_by_cat:
+                curr_dt = as_of_dt
+
             while curr_dt <= end_dt:
-                if curr_dt > as_of_dt:
+                if curr_dt >= as_of_dt:
                     d_key = (curr_dt.date(), cat)
                     # Avoid double-counting if a scheduled event in dataset already covers this date/category
                     if d_key not in covered_dates_by_cat:
