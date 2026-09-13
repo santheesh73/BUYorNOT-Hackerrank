@@ -38,11 +38,22 @@ class RecurringPatternDetector:
         as_of_dt = pd.to_datetime(as_of)
         history = [e for e in events if e.dt <= as_of_dt and e.amount != Decimal("0")]
 
-        # 2. Group by (category, direction)
-        grouped: dict[tuple[str, str], list[CashEvent]] = defaultdict(list)
+        # 2. Group events: isolate regular salary streams from one-off credits
+        grouped: dict[tuple[str, str, str | None], list[CashEvent]] = defaultdict(list)
         for ev in history:
+            cat_lower = ev.category.lower()
+            desc_lower = (ev.description or "").lower()
             direction = "credit" if ev.amount > 0 else "debit"
-            grouped[(ev.category.lower(), direction)].append(ev)
+
+            if cat_lower == "salary" and direction == "credit":
+                # Exclude one-off bonuses, commissions, arrears, windfalls, temporary/seasonal/overtime items
+                if any(k in desc_lower for k in [
+                    "bonus", "arrears", "commission", "seasonal", "temporary", "prorated",
+                    "payout", "earnings", "overtime", "performance", "net salary"
+                ]):
+                    continue
+
+            grouped[(cat_lower, direction)].append(ev)
 
         patterns: list[RecurringPattern] = []
 
@@ -62,15 +73,31 @@ class RecurringPatternDetector:
                 continue
 
             avg_interval = sum(intervals) / len(intervals)
+            med_interval = statistics.median(intervals)
             stdev = statistics.stdev(intervals) if len(intervals) > 1 else 0.0
 
-            # Determine frequency
-            is_every_5d = (4 <= avg_interval <= 6) and (stdev <= 1.5)
-            is_weekly = (6 <= avg_interval <= 8) and (stdev <= 2.5)
-            is_every_10d = (9 <= avg_interval <= 11) and (stdev <= 2.0)
-            is_biweekly = (13 <= avg_interval <= 16) and (stdev <= 3.0)
-            is_every_21d = (20 <= avg_interval <= 22) and (stdev <= 3.0)
-            is_monthly = (27 <= avg_interval <= 33) and (stdev <= 4.0)
+            # Count intervals matching standard frequencies with non-overlapping tolerances
+            # 5-day cycle is strictly for workday transport commute
+            is_every_5d = (cat == "transport") and (
+                ((4 <= avg_interval <= 6) and (stdev <= 1.5))
+                or (sum(1 for iv in intervals if abs(iv - 5) <= 1) >= max(2, int(0.6 * len(intervals))))
+            )
+            is_weekly = ((6 <= avg_interval <= 8) and (stdev <= 2.5)) or (
+                sum(1 for iv in intervals if abs(iv - 7) <= 1) >= max(2, int(0.6 * len(intervals)))
+            )
+            is_every_10d = (cat in ("groceries", "dining")) and (
+                ((9 <= avg_interval <= 11) and (stdev <= 2.0))
+                or (sum(1 for iv in intervals if abs(iv - 10) <= 1) >= max(2, int(0.6 * len(intervals))))
+            )
+            is_biweekly = ((13 <= avg_interval <= 16) and (stdev <= 3.0)) or (
+                sum(1 for iv in intervals if abs(iv - 14) <= 1) >= max(2, int(0.6 * len(intervals)))
+            )
+            is_every_21d = ((20 <= avg_interval <= 22) and (stdev <= 3.0)) or (
+                sum(1 for iv in intervals if abs(iv - 21) <= 1) >= max(2, int(0.6 * len(intervals)))
+            )
+            is_monthly = ((27 <= avg_interval <= 33) and (stdev <= 4.0)) or (
+                sum(1 for iv in intervals if abs(iv - 30) <= 2) >= max(2, int(0.6 * len(intervals)))
+            )
 
             if not (is_every_5d or is_weekly or is_every_10d or is_biweekly or is_every_21d or is_monthly):
                 # Irregular or single occurrences: do not promote to recurring pattern
@@ -90,13 +117,21 @@ class RecurringPatternDetector:
             else:
                 interval_days = 30
 
-            # Infer conservative amount
+            # If an income stream has missed its latest expected cycle, it is no longer active
+            if direction == "credit":
+                days_since_last = (as_of_dt - dates[-1]).days
+                if days_since_last > max(interval_days + 7, 35):
+                    continue
+
+            # Infer conservative amount: use mode if repeated, else median
             amounts = [abs(e.amount) for e in sorted_evs]
-            # Use mode if unique, else median
-            try:
-                inferred_amount = statistics.mode(amounts)
-            except statistics.StatisticsError:
-                inferred_amount = statistics.median(amounts)
+            from collections import Counter
+            counts = Counter(amounts)
+            most_common = counts.most_common(2)
+            if most_common and most_common[0][1] > 1 and (len(most_common) == 1 or most_common[0][1] > most_common[1][1]):
+                inferred_amount = most_common[0][0]
+            else:
+                inferred_amount = Decimal(str(statistics.median(amounts)))
 
             # Determine next occurrence strictly > as_of_dt
             last_dt = dates[-1]

@@ -63,6 +63,7 @@ class AffordabilityEngine:
         requested_amount: Decimal,
         baseline_states: Sequence[FinancialState],
         minimum_balance_to_keep: Decimal,
+        deadline: date | None = None,
     ) -> date | None:
         """Find the earliest chronological date T >= request_date where paying full amount is safe.
 
@@ -72,6 +73,17 @@ class AffordabilityEngine:
         """
         if not baseline_states:
             return None
+
+        # First evaluate within desired completion deadline if provided
+        if deadline is not None and deadline >= request_date:
+            deadline_states = [s for s in baseline_states if s.dt.date() <= deadline]
+            for i, state in enumerate(deadline_states):
+                d = state.dt.date()
+                if d < request_date:
+                    continue
+                min_bal = min(s.closing_balance for s in deadline_states[i:])
+                if min_bal - requested_amount >= minimum_balance_to_keep:
+                    return d
 
         for i, state in enumerate(baseline_states):
             d = state.dt.date()
@@ -180,7 +192,13 @@ class AffordabilityEngine:
         first_violation_date: date | None = None
         violation_amount: Decimal | None = None
 
-        for state in baseline_states:
+        eval_states = baseline_states
+        if deadline is not None and baseline_states:
+            max_p_date = max((p[0] for p in payments), default=deadline)
+            eval_end = max(deadline, max_p_date)
+            eval_states = [s for s in baseline_states if s.dt.date() <= eval_end]
+
+        for state in eval_states:
             d = state.dt.date()
             if d in payments_by_date:
                 cumulative_payment_impact += payments_by_date[d]
@@ -271,6 +289,7 @@ def calculate_earliest_date_for_full_payment(
     requested_amount: Decimal,
     baseline_states: Sequence[FinancialState],
     minimum_balance_to_keep: Decimal,
+    deadline: date | None = None,
 ) -> date | None:
     """Module-level convenience wrapper for AffordabilityEngine."""
     return default_affordability_engine.calculate_earliest_date_for_full_payment(
@@ -278,6 +297,7 @@ def calculate_earliest_date_for_full_payment(
         requested_amount=requested_amount,
         baseline_states=baseline_states,
         minimum_balance_to_keep=minimum_balance_to_keep,
+        deadline=deadline,
     )
 
 
@@ -286,12 +306,14 @@ def simulate_plan_safety(
     payments: Sequence[tuple[date, Decimal]],
     minimum_balance_to_keep: Decimal,
     spending_relief_by_date: dict[date, Decimal] | None = None,
+    deadline: date | None = None,
 ) -> tuple[bool, Decimal]:
     """Simulate applying plan payments, returning (is_safe, min_projected_balance)."""
     res = default_affordability_engine.validate_payment_schedule(
         baseline_states=baseline_states,
         payments=payments,
         minimum_balance_to_keep=minimum_balance_to_keep,
+        deadline=deadline,
         spending_relief_by_date=spending_relief_by_date,
     )
     return res.is_safe, res.min_projected_balance

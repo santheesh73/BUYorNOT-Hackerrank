@@ -153,7 +153,7 @@ class DecisionEngine:
 
         # 1. Compute amount_safe_to_pay and earliest_date_for_full_payment
         safe_amount = calculate_amount_safe_to_pay(req_amt, baseline_states, min_bal)
-        earliest_full_date = calculate_earliest_date_for_full_payment(req_date, req_amt, baseline_states, min_bal)
+        earliest_full_date = calculate_earliest_date_for_full_payment(req_date, req_amt, baseline_states, min_bal, deadline=deadline)
 
         # 2. Collect flexible spending options for the user
         flexible_events = self._get_adjustable_events(profile, req_date)
@@ -166,7 +166,7 @@ class DecisionEngine:
         if "full_payment" in user_methods:
             self.candidates_generated_count += 1
             full_payments = ((req_date, req_amt),)
-            safe_now, min_proj = simulate_plan_safety(baseline_states, full_payments, min_bal)
+            safe_now, min_proj = simulate_plan_safety(baseline_states, full_payments, min_bal, deadline=deadline)
             completes_on_time = req_date <= deadline
 
             if safe_now:
@@ -200,6 +200,8 @@ class DecisionEngine:
                     first_payment_date=req_date,
                     completion_date=req_date,
                     completes_by_deadline=completes_on_time,
+                    user_id=user_id,
+                    deadline=deadline,
                 )
                 if rescued_plan:
                     self.candidates_validated_count += 1
@@ -224,7 +226,7 @@ class DecisionEngine:
                 last_payment_date = inst_payments[-1][0]
                 completes_on_time = last_payment_date <= deadline
 
-                safe_inst, min_proj = simulate_plan_safety(baseline_states, inst_payments, min_bal)
+                safe_inst, min_proj = simulate_plan_safety(baseline_states, inst_payments, min_bal, deadline=deadline)
                 if safe_inst:
                     self.candidates_validated_count += 1
                     candidates.append(
@@ -256,6 +258,8 @@ class DecisionEngine:
                         first_payment_date=opt.first_payment_date,
                         completion_date=last_payment_date,
                         completes_by_deadline=completes_on_time,
+                        user_id=user_id,
+                        deadline=deadline,
                     )
                     if rescued_inst:
                         self.candidates_validated_count += 1
@@ -275,7 +279,7 @@ class DecisionEngine:
                 (req_date, safe_amount),
                 (earliest_full_date, remainder),
             )
-            safe_partial, min_proj = simulate_plan_safety(baseline_states, partial_payments, min_bal)
+            safe_partial, min_proj = simulate_plan_safety(baseline_states, partial_payments, min_bal, deadline=deadline)
             if safe_partial:
                 self.candidates_validated_count += 1
                 candidates.append(
@@ -304,7 +308,7 @@ class DecisionEngine:
         ):
             self.candidates_generated_count += 1
             wait_payments = ((earliest_full_date, req_amt),)
-            safe_wait, min_proj = simulate_plan_safety(baseline_states, wait_payments, min_bal)
+            safe_wait, min_proj = simulate_plan_safety(baseline_states, wait_payments, min_bal, deadline=deadline)
             if safe_wait:
                 self.candidates_validated_count += 1
                 candidates.append(
@@ -530,6 +534,8 @@ class DecisionEngine:
         first_payment_date: date,
         completion_date: date,
         completes_by_deadline: bool,
+        user_id: str | None = None,
+        deadline: date | None = None,
     ) -> PlanCandidate | None:
         """Explore stopping or reducing up to 3 flexible events to achieve financial safety."""
         if not flexible_events:
@@ -544,6 +550,16 @@ class DecisionEngine:
                 possible_actions.append(("reduce_to", fe))
 
         best_rescued: PlanCandidate | None = None
+
+        # Pre-fetch future events for user_id to identify discrete occurrence dates
+        future_events: list[Any] = []
+        if user_id:
+            try:
+                future_events = self.forecaster.future_cash_events(
+                    user_id, pd.Timestamp(first_payment_date), horizon_days=90
+                )
+            except Exception:
+                future_events = []
 
         # Try 1, 2, then 3 actions
         for k in range(1, min(4, len(possible_actions) + 1)):
@@ -562,25 +578,37 @@ class DecisionEngine:
                     ev_id = fe["event_id"]
                     if act_type == "stop":
                         formatted_changes.append(f"stop:{ev_id}")
-                        saving_per_occurrence = fe["amount"]
                     else:
                         min_amt = fe["min_amount"]
                         formatted_changes.append(f"reduce_to:{ev_id}:{min_amt}")
-                        saving_per_occurrence = fe["amount"] - min_amt
 
-                    # Apply relief on all projected occurrences of this category
                     cat_lower = fe["category"].lower()
-                    for state in baseline_states:
-                        d = state.dt.date()
-                        # Relief accumulates daily for the ongoing saved recurring expenses
-                        # Conservative model: apply daily amortized or periodic relief
-                        relief_by_date[d] = relief_by_date.get(d, Decimal("0.00")) + (saving_per_occurrence / Decimal("30.0"))
+                    # Find discrete occurrence dates of this category in projected events
+                    matching_events = [
+                        e
+                        for e in future_events
+                        if e.category.lower() == cat_lower and e.amount < Decimal("0.00")
+                    ]
+                    if matching_events:
+                        for me in matching_events:
+                            occ_d = me.dt.date()
+                            proj_amt = abs(me.amount)
+                            saving = proj_amt if act_type == "stop" else max(Decimal("0.00"), proj_amt - min_amt)
+                            relief_by_date[occ_d] = relief_by_date.get(occ_d, Decimal("0.00")) + saving
+                    else:
+                        saving_per_occurrence = fe["amount"] if act_type == "stop" else (fe["amount"] - min_amt)
+                        curr_d = first_payment_date
+                        max_d = baseline_states[-1].dt.date() if baseline_states else first_payment_date
+                        while curr_d <= max_d:
+                            relief_by_date[curr_d] = relief_by_date.get(curr_d, Decimal("0.00")) + saving_per_occurrence
+                            curr_d = curr_d + pd.Timedelta(days=30).to_pytimedelta()
 
                 is_safe, min_proj = simulate_plan_safety(
                     baseline_states=baseline_states,
                     payments=payments,
                     minimum_balance_to_keep=minimum_balance_to_keep,
                     spending_relief_by_date=relief_by_date,
+                    deadline=deadline,
                 )
 
                 if is_safe:

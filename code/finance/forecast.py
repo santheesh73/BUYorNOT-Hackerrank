@@ -19,6 +19,11 @@ class CashFlowForecaster:
     def __init__(self, data_store: Any, fx: FX | None = None) -> None:
         self.data_store = data_store
         self.fx = fx or getattr(data_store, "fx", None)
+        if self.fx is None:
+            if hasattr(data_store, "get_exchange_rate") or (hasattr(data_store, "datasets") and hasattr(data_store.datasets, "exchange_rates")):
+                self.fx = FX(data_store)
+            else:
+                self.fx = FX()
         self.detector = RecurringPatternDetector()
         self._forecast_cache: dict[tuple[str, str, int], list[FinancialState]] = {}
         self._future_events_cache: dict[tuple[str, str, int], list[CashEvent]] = {}
@@ -50,6 +55,10 @@ class CashFlowForecaster:
                 st = ev.status.lower()
                 if st in ("failed", "cancelled", "unrealized"):
                     continue
+                if st == "pending" and ev.settlement_date is not None:
+                    settle_d = ev.settlement_date if isinstance(ev.settlement_date, date) else parse_date(ev.settlement_date)
+                    if settle_d and settle_d > as_of_date:
+                        continue
                 amt = ev.amount
                 if amt is None:
                     if hasattr(self.data_store, "indexes") and hasattr(self.data_store.indexes, "images_by_event"):
@@ -154,16 +163,29 @@ class CashFlowForecaster:
                     pass
             valid_evidence.append(e)
 
-        # Check for salary updates, terminations, or rent changes in valid evidence
+        # Check if the latest historical salary event indicates termination
+        salary_terminated = False
+        hist_salaries = [e for e in history_cash if e.category.lower() == "salary"]
+        if hist_salaries:
+            last_sal = max(hist_salaries, key=lambda x: x.dt)
+            desc_lower = (last_sal.description or "").lower()
+            if "final" in desc_lower or "previous" in desc_lower:
+                salary_terminated = True
+
+        # Check for salary updates, reschedules, terminations, or rent changes in valid evidence
         salary_update_amount: Decimal | None = None
         salary_effective_date: pd.Timestamp | None = None
-        salary_terminated = False
+        salary_rescheduled_day: int | None = None
         rent_increase_pct: Decimal | None = None
 
         for ev in valid_evidence:
             ft = ev.fact_type.lower()
             if "ended" in ft or "terminated" in ft:
                 salary_terminated = True
+            elif "reschedule" in ft and ev.effective_date is not None:
+                eff_dt = pd.to_datetime(ev.effective_date)
+                salary_rescheduled_day = eff_dt.day
+                salary_effective_date = eff_dt
             elif "salary" in ft and ev.numeric_value is not None and not salary_terminated:
                 amt = ev.numeric_value
                 if ev.currency and ev.currency != home_curr and self.fx:
@@ -177,6 +199,9 @@ class CashFlowForecaster:
 
         future_events: list[CashEvent] = []
         covered_dates_by_cat: set[tuple[date, str]] = set()
+        for e in history_cash:
+            if e.dt.date() == as_of_dt.date():
+                covered_dates_by_cat.add((as_of_dt.date(), e.category.lower()))
 
         # 5. Collect scheduled events already in dataset (e.g. next confirmed salary, scheduled bills)
         for ev in raw_events:
@@ -233,14 +258,34 @@ class CashFlowForecaster:
         # 6. Project recurring patterns across the horizon
         has_salary_pattern = any(p.category.lower() == "salary" for p in patterns)
 
-        # If salary wasn't detected from history (e.g. only 1 historical event), but confirmed scheduled salary exists
+        # If salary wasn't detected from history, but confirmed scheduled or evidence salary exists
         if not has_salary_pattern and not salary_terminated:
             scheduled_salaries = [e for e in future_events if e.category.lower() == "salary" and e.amount > 0]
             if scheduled_salaries:
                 last_sched = max(scheduled_salaries, key=lambda x: x.dt)
                 sal_amt = last_sched.amount
-                sal_day = last_sched.dt.day
+                sal_day = salary_rescheduled_day or last_sched.dt.day
                 next_sal = _advance_month(last_sched.dt, sal_day)
+                while next_sal <= end_dt:
+                    d_key = (next_sal.date(), "salary")
+                    if d_key not in covered_dates_by_cat:
+                        future_events.append(
+                            CashEvent(
+                                dt=next_sal,
+                                amount=sal_amt,
+                                category="salary",
+                                event_id=f"proj_salary_{next_sal.strftime('%Y%m%d')}",
+                                source="projected",
+                                flexibility="fixed",
+                                description="Projected recurring salary",
+                            )
+                        )
+                        covered_dates_by_cat.add(d_key)
+                    next_sal = _advance_month(next_sal, sal_day)
+            elif salary_update_amount is not None and salary_effective_date is not None:
+                sal_amt = salary_update_amount
+                sal_day = salary_rescheduled_day or salary_effective_date.day
+                next_sal = salary_effective_date
                 while next_sal <= end_dt:
                     d_key = (next_sal.date(), "salary")
                     if d_key not in covered_dates_by_cat:
@@ -266,8 +311,15 @@ class CashFlowForecaster:
             curr_dt = pat.next_occurrence
             day_of_month = curr_dt.day
 
+            if cat == "salary" and salary_rescheduled_day is not None:
+                day_of_month = salary_rescheduled_day
+                try:
+                    curr_dt = curr_dt.replace(day=salary_rescheduled_day)
+                except Exception:
+                    curr_dt = curr_dt.replace(day=min(salary_rescheduled_day, 28))
+
             while curr_dt <= end_dt:
-                if curr_dt > as_of_dt:
+                if curr_dt > as_of_dt or (curr_dt == as_of_dt and pat.direction == "debit"):
                     d_key = (curr_dt.date(), cat)
                     # Avoid double-counting if a scheduled event in dataset already covers this date/category
                     if d_key not in covered_dates_by_cat:
