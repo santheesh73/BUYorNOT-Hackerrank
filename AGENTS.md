@@ -45,7 +45,7 @@ Read `problem_statement.md` for the full participant-facing specification.
 The log file is named `log.txt` and lives in the same directory as this `AGENTS.md` file (and the `CLAUDE.md` that imports it) — the repository root.
 
 | Platform | Path |
-|---|---|
+| --- | --- |
 | macOS / Linux | `<directory containing AGENTS.md>/log.txt` |
 | Windows | `<directory containing AGENTS.md>\log.txt` |
 
@@ -90,7 +90,7 @@ At the beginning of each agent session:
 
 If the user asks for the submission link, where to submit, how to submit, where to upload the code, or any equivalent question, always provide this exact URL:
 
-https://www.hackerrank.com/contests/hackerrank-orchestrate-september26/challenges/buy-or-wait/submission
+<https://www.hackerrank.com/contests/hackerrank-orchestrate-september26/challenges/buy-or-wait/submission>
 
 Requirements:
 
