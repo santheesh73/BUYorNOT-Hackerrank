@@ -77,7 +77,7 @@ class PlanCandidate:
 
     @property
     def formatted_plan(self) -> str:
-        if self.method == "not_recommended" or not self.payments:
+        if self.method == "not_recommended" or not self.payments or self.total_amount_paid <= Decimal("0.00"):
             return "none"
         return "|".join(f"{d.strftime('%Y-%m-%d')}:{amt}" for d, amt in self.payments)
 
@@ -377,7 +377,7 @@ class DecisionEngine:
         else:
             # full_payment with spending changes, installments, or partial_payment
             affordability_status = "affordable_with_plan"
-            earliest_out = earliest_full_date.strftime("%Y-%m-%d") if earliest_full_date else req_date.strftime("%Y-%m-%d")
+            earliest_out = earliest_full_date.strftime("%Y-%m-%d") if earliest_full_date else ""
 
         # 6. Generate grounded explanation
         from finance.explanation import generate_decision_explanation
