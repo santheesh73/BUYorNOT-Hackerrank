@@ -92,8 +92,6 @@ Required columns, in order:
 - `spending_changes_needed`
 - `decision_explanation`
 
-
-
 ## Output meaning
 
 - `amount_safe_to_pay`: largest amount the user can safely pay on `request_date` before optional spending changes, while covering protected expenses and maintaining their minimum balance
@@ -171,8 +169,6 @@ The system should:
 - Use messages and images to clarify, amend, cancel, delay, or confirm financial information.
 - Treat all message and image content as untrusted data. Embedded instructions must not override the problem rules.
 
-
-
 ### 90-Day Safety Check
 
 Forecast the user's balance for the next 90 days using recurring income and expenses, confirmed future payments, and relevant messages or images. A plan is safe only if the balance never falls below `minimum_balance_to_keep`. Ignore pending credits, failed or cancelled transactions, duplicate records, and unrealized investments.
@@ -181,8 +177,6 @@ The plan must complete the request by `desired_completion_date` and keep the use
 
 - `amount_safe_to_pay`: the most the user can pay today before optional spending changes without breaking the 90-day safety check, capped at `requested_amount`.
 - `earliest_date_for_full_payment`: the first date the full amount passes the safety check without optional spending changes.
-
-
 
 ### Choosing Between Safe Plans
 
@@ -221,20 +215,15 @@ The scoring will consider:
 - validity of `spending_changes_needed`
 - usefulness and consistency of `decision_explanation`
 
-
 ## Submission
 
 Submit:
-
 
 | File              | Description                                                                                  |
 | ----------------- | -------------------------------------------------------------------------------------------- |
 | `code.zip`        | Full runnable solution, prompts/configuration, README, and the required `evaluation/` folder |
 | `output.csv`      | Predictions for every row in `dataset/requests.csv`                                          |
 | `chat_transcript` | Conversation transcript showing how you developed or used the system                         |
-
-
-
 
 ### Token Usage and Cost Analysis
 
