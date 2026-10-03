@@ -206,7 +206,7 @@ Before submitting, confirm:
 <br>
 
 <sub>Developed for the Educational purpose</sub><br>
-<sub>Crafted with care by <a href="https://github.com/santheesh73"><b>Santheesh S</b></a></sub>
+<sub>Crafted with care and precision by <a href="https://github.com/santheesh73"><b>Santheesh S</b></a></sub>
 
 </div>
 
